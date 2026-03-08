@@ -23,7 +23,8 @@ const state = {
   lastTrackKey: "",
   lastSyncAt: 0,
   pollTimer: null,
-  progressTimer: null
+  progressTimer: null,
+  scroll: { auto: true, speed: 1.0, userPaused: false }
 };
 
 const el = {};
@@ -44,6 +45,7 @@ async function boot() {
 function cacheElements() {
   const ids = [
     "spotify-client-id", "worker-url", "redirect-uri",
+  "scroll-controls", "scroll-toggle", "scroll-slower", "scroll-faster", "scroll-speed-label",
     "copy-url-btn", "connect-btn", "disconnect-btn",
     "auth-status-pill", "auth-helper",
     "playback-pill", "cover-art",
@@ -75,6 +77,28 @@ function bindEvents() {
     state.settings.workerUrl = el.workerUrl.value.trim().replace(/\/+$/, "");
     saveSettings();
   });
+
+  // Teleprompter controls
+  el.scrollToggle?.addEventListener("click", () => {
+    state.scroll.userPaused = !state.scroll.userPaused;
+    updateScrollUI();
+  });
+  el.scrollSlower?.addEventListener("click", () => {
+    state.scroll.speed = Math.max(0.25, +(state.scroll.speed - 0.25).toFixed(2));
+    state.scroll.userPaused = false;
+    updateScrollUI();
+  });
+  el.scrollFaster?.addEventListener("click", () => {
+    state.scroll.speed = Math.min(4, +(state.scroll.speed + 0.25).toFixed(2));
+    state.scroll.userPaused = false;
+    updateScrollUI();
+  });
+  // Pause auto-scroll if user manually scrolls
+  el.chordsSections?.addEventListener("scroll", () => {
+    if (state.scroll._programmatic) return;
+    state.scroll.userPaused = true;
+    updateScrollUI();
+  }, { passive: true });
   el.redirectUri.addEventListener("input", () => {
     state.settings.redirectUri = el.redirectUri.value.trim();
     saveSettings();
@@ -335,9 +359,12 @@ async function fetchSpotifyPlayback() {
 }
 
 async function loadTrackResources(track, trackKey) {
-  // Scroll back to top so user sees the new song from the beginning
+  // Scroll back to top and reset teleprompter for new song
   window.scrollTo({ top: 0, behavior: "smooth" });
   if (el.chordsSections) el.chordsSections.scrollTop = 0;
+  state.scroll.userPaused = false;
+  showScrollControls(false);
+  updateScrollUI();
 
   // Lyrics
   resetLyrics("warn", "Buscando…", "Buscando letra automáticamente…");
@@ -481,9 +508,9 @@ async function fetchChordsViaCifraclub(title, artist) {
   if (!songUrl) {
     const toSlug = s => s.toLowerCase()
       .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
-      // Remove feat., ft., with ..., (xxx) suffixes before slugifying
-      .replace(/\s*[\(\[](feat|ft|with|prod|x)[^)\]]*[\)\]]/gi, "")
-      .replace(/\s*(feat|ft)\.?\s+.*/gi, "")
+      // Remove feat/ft only as standalone words (not inside other words like "left", "after")
+      .replace(/\s*[\(\[]\s*(?:feat|ft|with|prod)\.?\s[^\)]*[\)\]]/gi, "")
+      .replace(/\s+(?:feat|ft)\.?\s+.*/gi, "")
       .replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     songUrl = `https://www.cifraclub.com/${toSlug(artist)}/${toSlug(title)}/`;
     console.log("[Cifraclub] using slug fallback:", songUrl);
@@ -732,10 +759,12 @@ async function fetchChordsForTrack(track, trackKey) {
     state.chordsTone = "live";
     state.chordsText = "Encontrados";
     state.chordsData = chordData;
+    showScrollControls(true);
   } else {
     state.chordsTone = "warn";
     state.chordsText = "No encontrados";
     state.chordsData = null;
+    showScrollControls(false);
     if (el.chordsStatusText) {
       el.chordsStatusText.textContent =
         "No encontrado automáticamente — usa los links de búsqueda abajo. " + log.join(" · ");
@@ -765,7 +794,51 @@ function startProgressLoop() {
   state.progressTimer = window.setInterval(() => {
     updateProgressDisplay();
     renderSyncLabel();
+    updateTeleprompter();
   }, 500);
+}
+
+// ─── Teleprompter ─────────────────────────────────────────────
+function updateTeleprompter() {
+  const track = state.currentTrack;
+  if (!track || !state.chordsData || state.scroll.userPaused) return;
+
+  const el_sections = el.chordsSections;
+  if (!el_sections) return;
+
+  const scrollable = el_sections.scrollHeight - el_sections.clientHeight;
+  if (scrollable <= 0) return;
+
+  const progressMs = computeProgressMs();
+  const durationMs = track.durationMs || 1;
+
+  // Map song progress to scroll position, adjusted by speed multiplier
+  // speed=1 → scroll ends at song end; speed=2 → scroll ends at 50% of song
+  const ratio = Math.min((progressMs / durationMs) * state.scroll.speed, 1);
+  const targetScrollTop = Math.round(ratio * scrollable);
+
+  // Smooth scroll toward target
+  const current = el_sections.scrollTop;
+  const diff = targetScrollTop - current;
+  if (Math.abs(diff) < 2) return;
+
+  state.scroll._programmatic = true;
+  el_sections.scrollTop = current + diff * 0.08; // ease toward target
+  requestAnimationFrame(() => { state.scroll._programmatic = false; });
+}
+
+function updateScrollUI() {
+  if (!el.scrollToggle) return;
+  const paused = state.scroll.userPaused;
+  el.scrollToggle.textContent = paused ? "▶ Auto" : "⏸ Auto";
+  el.scrollToggle.classList.toggle("paused", paused);
+  if (el.scrollSpeedLabel) {
+    el.scrollSpeedLabel.textContent = state.scroll.speed.toFixed(2).replace(/\.?0+$/, "") + "×";
+  }
+}
+
+function showScrollControls(visible) {
+  if (el.scrollControls) el.scrollControls.style.display = visible ? "flex" : "none";
 }
 
 // ─── Render ───────────────────────────────────────────────────
