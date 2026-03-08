@@ -415,21 +415,7 @@ async function fetchLyricsForTrack(track) {
 // ─────────────────────────────────────────────────────────────
 
 function buildChordPrompt(title, artist) {
-  return (
-    `Chord sheet for "${title}" by "${artist}". ` +
-    `Reply with ONLY a JSON object, no markdown, no extra text:\n` +
-    `{"key":"G","tempo":"moderado","chords":["G","Em","C","D"],` +
-    `"sections":[` +
-      `{"name":"Verso","lines":[` +
-        `{"text":"First real lyric line","chords":["G","","Em",""]},` +
-        `{"text":"Second real lyric line","chords":["C","","D",""]}]},` +
-      `{"name":"Coro","lines":[` +
-        `{"text":"First chorus line","chords":["C","","G",""]},` +
-        `{"text":"Second chorus line","chords":["D","","Em",""]}]}],` +
-    `"progression":{"Verso":"G - Em - C - D","Coro":"C - G - D - Em"}}\n` +
-    `Rules: REAL chords of THIS song. Real lyrics. Verso+Coro minimum. ` +
-    `4 chords per line (use "" for silent beats). key = actual key.`
-  );
+  return `Fast! cuales son los acordes y letra de ${title} de ${artist}, esto en codeblock rmarkdown y considerando que es piano.`;
 }
 
 // ── Strategy 1: Groq (free LLM, no CC needed) ────────────────
@@ -442,14 +428,14 @@ async function fetchChordsViaGroq(title, artist, groqKey) {
     },
     body: JSON.stringify({
       model: "llama-3.1-8b-instant",
-      temperature: 0.2,
-      max_tokens: 1500,
+      temperature: 0.3,
+      max_tokens: 2000,
       messages: [
-        { role: "system", content: "You are a music expert. Reply only with valid JSON, no markdown." },
+        { role: "system", content: "Eres un experto en música. Responde siempre con un codeblock markdown que contenga la letra y acordes de piano de la canción solicitada. Formato: acordes encima de la letra, sección por sección." },
         { role: "user",   content: buildChordPrompt(title, artist) }
       ]
     })
-  }, 8000);
+  }, 10000);
 
   if (!res.ok) {
     const err = await res.json().catch(() => ({}));
@@ -458,9 +444,14 @@ async function fetchChordsViaGroq(title, artist, groqKey) {
   const data = await res.json();
   const raw  = data?.choices?.[0]?.message?.content || "";
   if (!raw) throw new Error("Groq: respuesta vacía");
-  const parsed = parseChordJSON(raw);
-  if (!parsed) throw new Error("Groq: JSON inválido");
-  return parsed;
+
+  // Extract content inside ```...``` or return raw if no fences found
+  const fenceMatch = raw.match(/```(?:markdown|text|rmarkdown)?\s*([\s\S]*?)```/);
+  const text = fenceMatch ? fenceMatch[1].trim() : raw.trim();
+  if (!text) throw new Error("Groq: contenido vacío");
+
+  // Return as a plain-text chord sheet object
+  return { type: "text", content: text };
 }
 
 // ── Strategy 2: Chordie.com scrape ───────────────────────────
@@ -804,32 +795,37 @@ function renderChords() {
 
   const data = state.chordsData;
 
+  // Always hide the JSON-era elements
+  if (el.chordsKeyBadge)  el.chordsKeyBadge.style.display = "none";
+  if (el.chordsChipsRow)  el.chordsChipsRow.innerHTML     = "";
+
   if (!data) {
-    el.chordsKeyBadge.style.display = "none";
-    el.chordsChipsRow.innerHTML     = "";
-    el.chordsSections.innerHTML     = el.chordsStatusText
-      ? ""
-      : "<p style='color:var(--muted);font-size:14px'>Los acordes aparecerán aquí automáticamente.</p>";
+    if (el.chordsSections) el.chordsSections.innerHTML =
+      `<p class="chords-placeholder" id="chords-status-text">${
+        state.chordsTone === "warn" && state.chordsText !== "Esperando"
+          ? escapeHtml(state.chordsText)
+          : "Los acordes aparecerán aquí automáticamente cuando detecte una canción."
+      }</p>`;
     return;
   }
 
-  // Key badge
-  el.chordsKeyBadge.style.display = "inline-flex";
-  el.chordsKeyBadge.querySelector(".chords-key-val").textContent   = data.key   || "?";
-  el.chordsKeyBadge.querySelector(".chords-tempo-val").textContent = data.tempo || "";
+  // ── Plain-text chord sheet from Groq ──
+  if (data.type === "text") {
+    if (el.chordsSections) {
+      el.chordsSections.innerHTML = `<pre class="chord-sheet-pre">${escapeHtml(data.content)}</pre>`;
+    }
+    return;
+  }
 
-  // Chord chips
-  el.chordsChipsRow.innerHTML = (data.chords || []).map(chord =>
-    `<span class="chord-chip">${escapeHtml(chord)}</span>`
-  ).join("");
-
-  // Sections with lyrics+chords
-  el.chordsSections.innerHTML = (data.sections || []).map(sec => `
-    <div class="chord-section">
-      <span class="section-label-chip">${escapeHtml(sec.name || "")}</span>
-      ${(sec.lines || []).map(line => buildLyricLine(line)).join("")}
-    </div>
-  `).join("");
+  // ── Scraped structured data (Chordie / E-Chords) ──
+  if (el.chordsSections) {
+    el.chordsSections.innerHTML = (data.sections || []).map(sec => `
+      <div class="chord-section">
+        <span class="section-label-chip">${escapeHtml(sec.name || "")}</span>
+        ${(sec.lines || []).map(line => buildLyricLine(line)).join("")}
+      </div>
+    `).join("");
+  }
 }
 
 function buildLyricLine(line) {
