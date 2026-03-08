@@ -443,6 +443,8 @@ async function fetchChordsViaCifraclub(title, artist) {
 
   // Extract first result URL — cifraclub links look like /artist/song/
   const linkMatch = searchHtml.match(/href="(\/[a-z0-9\-]+\/[a-z0-9\-]+\/?)"/);
+  console.log("[Cifraclub] search html snippet:", searchHtml.slice(0, 500));
+  console.log("[Cifraclub] link found:", linkMatch?.[1]);
   if (!linkMatch) throw new Error("Cifraclub: no se encontró la canción");
 
   const songUrl = "https://www.cifraclub.com.br" + linkMatch[1];
@@ -454,10 +456,18 @@ async function fetchChordsViaCifraclub(title, artist) {
 
 async function fetchHtmlViaWorker(targetUrl) {
   try {
-    const res = await fetchWithTimeout(proxyUrl(targetUrl), {}, 8000);
+    const proxied = proxyUrl(targetUrl);
+    console.log("[Worker] fetching:", targetUrl);
+    const res = await fetchWithTimeout(proxied, {}, 10000);
+    console.log("[Worker] status:", res.status, "for", targetUrl);
     if (!res.ok) return null;
-    return res.text();
-  } catch (_) { return null; }
+    const html = await res.text();
+    console.log("[Worker] html length:", html.length, "for", targetUrl);
+    return html;
+  } catch (e) {
+    console.error("[Worker] error:", e.message, "for", targetUrl);
+    return null;
+  }
 }
 
 function parseCifraclubPage(html, title, artist) {
@@ -466,17 +476,24 @@ function parseCifraclubPage(html, title, artist) {
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "");
 
-  // Cifraclub wraps chords in <b> tags and lyrics in plain text inside <pre>
-  // Structure: alternating chord lines and lyric lines inside .cifra_cnt or pre
   const preMatch = clean.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
-  if (!preMatch) return null;
+  console.log("[Cifraclub] pre tag found:", !!preMatch, "html length:", clean.length);
+  if (!preMatch) {
+    console.log("[Cifraclub] html sample:", clean.slice(0, 1000));
+    return null;
+  }
 
   const raw = preMatch[1];
+  console.log("[Cifraclub] pre content length:", raw.length, "sample:", raw.slice(0, 200));
 
   // Extract chord names from <b> tags
   const chordPattern = /<b>([A-G][#b]?(?:m(?:aj)?|dim|aug|sus[24]?|add)?(?:[0-9])?(?:\/[A-G][#b]?)?)<\/b>/g;
   const allChords = [...raw.matchAll(chordPattern)].map(m => m[1]);
-  if (allChords.length < 2) return null;
+  console.log("[Cifraclub] chords found:", allChords.length, allChords.slice(0, 10));
+  if (allChords.length < 2) {
+    console.log("[Cifraclub] raw pre sample:", raw.slice(0, 500));
+    return null;
+  }
 
   const uniqueChords = [...new Set(allChords)].slice(0, 12);
 
