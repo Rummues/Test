@@ -3,18 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Spotify Live Chords (AI Edition)</title>
-  <meta name="description" content="Acordes generados por IA en tiempo real.">
+  <title>Spotify Live Chords (Free AI)</title>
   <link rel="stylesheet" href="./styles.css">
 </head>
 <body>
   <div class="page-shell">
     <header class="hero">
       <div class="hero-copy">
-        <p class="eyebrow">Motor de Inteligencia Artificial</p>
+        <p class="eyebrow">Motor de Inteligencia Artificial Libre</p>
         <h1>Acordes Live AI</h1>
         <p class="hero-text">
-          Sincroniza Spotify. La IA generará los acordes al instante, sin depender de páginas externas ni sufrir bloqueos.
+          Sincroniza Spotify. La IA generará los acordes al instante, sin llaves, sin bloqueos y con transposición en tiempo real.
         </p>
       </div>
     </header>
@@ -25,7 +24,7 @@
           <div class="card-head">
             <div>
               <p class="section-label">Setup</p>
-              <h2>Conexión y Motores</h2>
+              <h2>Conexión</h2>
             </div>
             <span class="status-pill" id="auth-status-pill">Sin conectar</span>
           </div>
@@ -35,13 +34,6 @@
               <label for="spotify-client-id">Spotify Client ID</label>
               <input id="spotify-client-id" placeholder="Pega aquí tu Client ID de Spotify">
             </div>
-
-            <div>
-              <label for="gemini-api-key" style="color: #1DB954;">Gemini API Key (Cerebro IA)</label>
-              <input id="gemini-api-key" type="password" placeholder="Pega aquí tu clave gratuita de IA">
-              <p style="font-size: 11px; color: #a4aab6; margin-top: 5px;">Consíguela gratis en Google AI Studio.</p>
-            </div>
-
             <div>
               <label for="redirect-uri">Redirect URI</label>
               <div class="input-row">
@@ -109,8 +101,7 @@
             </div>
           </div>
 
-          <pre id="chords-view" style="font-size: 14px; line-height: 1.5; scroll-behavior: smooth;">Conecta Spotify e ingresa tu API Key de IA para comenzar la magia...</pre>
-          
+          <pre id="chords-view" style="font-size: 14px; line-height: 1.5; scroll-behavior: smooth;">Conecta Spotify y dale play a la música. La IA libre hará el resto...</pre>
         </section>
       </main>
     </div>
