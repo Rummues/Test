@@ -435,21 +435,47 @@ function proxyUrl(targetUrl) {
 async function fetchChordsViaCifraclub(title, artist) {
   const q = encodeURIComponent(`${artist} ${title}`);
 
-  // Search page
   const searchHtml = await fetchHtmlViaWorker(
     `https://www.cifraclub.com.br/busca/?q=${q}`
   );
   if (!searchHtml) throw new Error("Cifraclub: sin respuesta en búsqueda");
 
-  // Extract first result URL — cifraclub links look like /artist/song/
-  const linkMatch = searchHtml.match(/href="(\/[a-z0-9\-]+\/[a-z0-9\-]+\/?)"/);
-  console.log("[Cifraclub] search html snippet:", searchHtml.slice(0, 500));
-  console.log("[Cifraclub] link found:", linkMatch?.[1]);
-  if (!linkMatch) throw new Error("Cifraclub: no se encontró la canción");
+  // Cifraclub is Next.js — results are in __NEXT_DATA__ JSON
+  const nextDataMatch = searchHtml.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+  let songUrl = null;
 
-  const songUrl = "https://www.cifraclub.com.br" + linkMatch[1];
+  if (nextDataMatch) {
+    try {
+      const nextData = JSON.parse(nextDataMatch[1]);
+      // Results are usually at props.pageProps.result or similar
+      const results = nextData?.props?.pageProps?.result
+                   || nextData?.props?.pageProps?.results
+                   || nextData?.props?.pageProps?.data?.result;
+      console.log("[Cifraclub] nextData keys:", Object.keys(nextData?.props?.pageProps || {}));
+      if (Array.isArray(results) && results.length > 0) {
+        const first = results[0];
+        const artistSlug = first.artist?.url || first.artistUrl || first.artist_url;
+        const songSlug   = first.url || first.song_url || first.cifra_url;
+        console.log("[Cifraclub] first result:", JSON.stringify(first).slice(0, 200));
+        if (artistSlug && songSlug) {
+          songUrl = `https://www.cifraclub.com.br/${artistSlug}/${songSlug}/`;
+        }
+      }
+    } catch (e) {
+      console.error("[Cifraclub] JSON parse error:", e.message);
+    }
+  }
+
+  // Fallback: try direct URL guess artist/song slug
+  if (!songUrl) {
+    const artistSlug = artist.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    const titleSlug  = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    songUrl = `https://www.cifraclub.com.br/${artistSlug}/${titleSlug}/`;
+    console.log("[Cifraclub] using slug fallback:", songUrl);
+  }
+
   const songHtml = await fetchHtmlViaWorker(songUrl);
-  if (!songHtml) throw new Error("Cifraclub: sin respuesta en página de canción");
+  if (!songHtml || songHtml.length < 1000) throw new Error("Cifraclub: página de canción vacía");
 
   return parseCifraclubPage(songHtml, title, artist);
 }
@@ -586,24 +612,33 @@ async function fetchChordsViaEChords(title, artist) {
   const searchHtml = await fetchHtmlViaWorker(`https://www.e-chords.com/search-all/${q}`);
   if (!searchHtml) throw new Error("E-Chords: sin respuesta");
 
-  const linkMatch = searchHtml.match(/href="(https:\/\/www\.e-chords\.com\/(?:chords|tabs)\/[^"]+)"/);
+  // e-chords search results have links like /chords/artist/song or /tabs/artist/song
+  const linkMatch = searchHtml.match(/href="(https?:\/\/www\.e-chords\.com\/(?:chords|tabs)\/[^"]+)"/i)
+                 || searchHtml.match(/href="(\/(?:chords|tabs)\/[^"]+)"/i);
+  console.log("[E-Chords] link found:", linkMatch?.[1]);
   if (!linkMatch) throw new Error("E-Chords: canción no encontrada");
 
-  const pageHtml = await fetchHtmlViaWorker(linkMatch[1]);
+  const pageUrl = linkMatch[1].startsWith("http") ? linkMatch[1] : "https://www.e-chords.com" + linkMatch[1];
+  const pageHtml = await fetchHtmlViaWorker(pageUrl);
   if (!pageHtml) throw new Error("E-Chords: sin respuesta en página");
 
+  console.log("[E-Chords] page html length:", pageHtml.length);
+
   const matches = [...pageHtml.matchAll(/\[([A-G][#b]?(?:m(?:aj)?|dim|aug|sus)?[0-9]?)\]/g)];
+  console.log("[E-Chords] chords found:", matches.length);
   if (matches.length < 2) throw new Error("E-Chords: sin acordes");
 
   const uniqueChords = [...new Set(matches.map(m => m[1]))].slice(0, 10);
   const preMatch = pageHtml.match(/<pre[^>]*id="core"[^>]*>([\s\S]*?)<\/pre>/i)
                 || pageHtml.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+  console.log("[E-Chords] pre found:", !!preMatch);
   const rawText = preMatch
     ? preMatch[1].replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&nbsp;/g, " ")
     : "";
   const lines = rawText.split("\n").map(l => l.trim()).filter(Boolean);
-  return buildSectionsFromChordSheet(lines, title, artist).length
-    ? { key: guessKey(uniqueChords), tempo: "—", chords: uniqueChords, sections: buildSectionsFromChordSheet(lines, title, artist), progression: {} }
+  const sections = buildSectionsFromChordSheet(lines, title, artist);
+  return sections.length
+    ? { key: guessKey(uniqueChords), tempo: "—", chords: uniqueChords, sections, progression: {} }
     : null;
 }
 
