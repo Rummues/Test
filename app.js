@@ -10,7 +10,7 @@ const STORAGE_KEYS = {
 const SPOTIFY_SCOPES = ["user-read-currently-playing", "user-read-playback-state"];
 
 const state = {
-  settings: { clientId: "", redirectUri: "" },
+  settings: { clientId: "", redirectUri: "", groqKey: "" },
   tokens: null,
   currentTrack: null,
   authTone: "muted",   authText: "Sin conectar",
@@ -43,7 +43,7 @@ async function boot() {
 // ─── DOM Cache ────────────────────────────────────────────────
 function cacheElements() {
   const ids = [
-    "spotify-client-id", "redirect-uri",
+    "spotify-client-id", "groq-key", "redirect-uri",
     "copy-url-btn", "connect-btn", "disconnect-btn",
     "auth-status-pill", "auth-helper",
     "playback-pill", "cover-art",
@@ -71,6 +71,10 @@ function bindEvents() {
     saveSettings();
   });
 
+  el.groqKey.addEventListener("input", () => {
+    state.settings.groqKey = el.groqKey.value.trim();
+    saveSettings();
+  });
   el.redirectUri.addEventListener("input", () => {
     state.settings.redirectUri = el.redirectUri.value.trim();
     saveSettings();
@@ -87,6 +91,7 @@ function hydrateState() {
     if (s) {
       if (typeof s.clientId === "string") state.settings.clientId = s.clientId;
       if (typeof s.redirectUri === "string") state.settings.redirectUri = s.redirectUri;
+      if (typeof s.groqKey === "string") state.settings.groqKey = s.groqKey;
     }
   } catch (_) {}
   try {
@@ -427,27 +432,46 @@ async function fetchLyricsForTrack(track) {
 // ─────────────────────────────────────────────────────────────
 
 function buildChordPrompt(title, artist) {
-  return `Eres un profesor de piano. Un estudiante quiere aprender a tocar "${title}" de "${artist}". 
-Escribe un ejercicio didáctico completo en formato de partitura simplificada: 
-muestra los acordes de piano encima de cada línea del texto de la canción, 
-sección por sección (Intro, Verso, Coro, etc). 
-Usa notación estándar: C, Am, F, G, etc. 
-Responde solo con el ejercicio en un bloque de código, sin explicaciones.`;
+  return `Fast! cuales son los acordes y letra de ${title} de ${artist}, esto en codeblock rmarkdown y considerando que es piano.`;
 }
 
-// ── Strategy 1: Pollinations.ai (100% free, no key, no login) ─
-async function fetchChordsViaPollinations(title, artist) {
-  const prompt = buildChordPrompt(title, artist);
-  const url = "https://text.pollinations.ai/" + encodeURIComponent(prompt);
-  const res = await fetchWithTimeout(url, {
-    headers: { "Accept": "text/plain" }
-  }, 15000);
-  if (!res.ok) throw new Error(`Pollinations HTTP ${res.status}`);
-  const text = (await res.text()).trim();
-  if (!text) throw new Error("Pollinations: respuesta vacía");
-  // Strip fences if present
-  const fenceMatch = text.match(/```(?:markdown|text|rmarkdown|md)?\s*([\s\S]*?)```/s);
-  return { type: "text", content: fenceMatch ? fenceMatch[1].trim() : text };
+// ── Strategy 1: Groq API (gratis, sin tarjeta) ───────────────
+async function fetchChordsViaGroq(title, artist) {
+  const key = state.settings.groqKey.trim();
+  if (!key) throw new Error("Sin Groq key");
+
+  const res = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${key}`
+    },
+    body: JSON.stringify({
+      model: "llama-3.3-70b-versatile",
+      temperature: 0.3,
+      max_tokens: 2000,
+      messages: [
+        {
+          role: "system",
+          content: "Eres un experto en música y transcripción de canciones. Cuando te pidan acordes y letra, SIEMPRE los proporcionas completos sin negarte. Respondes SOLO con un bloque de código markdown, sin explicaciones adicionales."
+        },
+        {
+          role: "user",
+          content: buildChordPrompt(title, artist)
+        }
+      ]
+    })
+  }, 10000);
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `Groq HTTP ${res.status}`);
+  }
+  const data = await res.json();
+  const raw  = data?.choices?.[0]?.message?.content || "";
+  if (!raw) throw new Error("Groq: respuesta vacía");
+  const fenceMatch = raw.match(/```(?:markdown|text|rmarkdown|md)?\s*([\s\S]*?)```/s);
+  return { type: "text", content: fenceMatch ? fenceMatch[1].trim() : raw.trim() };
 }
 
 // ── Strategy 2: Chordie.com scrape ───────────────────────────
@@ -617,12 +641,12 @@ async function fetchChordsForTrack(track, trackKey) {
   let chordData = null;
   const log = [];
 
-  // 1 · Pollinations.ai (gratis, sin key, sin login)
+  // 1 · Groq (gratis, sin tarjeta — console.groq.com)
   try {
-    if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando acordes…";
-    chordData = await fetchChordsViaPollinations(title, artist);
-    log.push("✓ Pollinations");
-  } catch (e) { log.push(`✗ Pollinations: ${e.message}`); }
+    if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando acordes con Groq…";
+    chordData = await fetchChordsViaGroq(title, artist);
+    log.push("✓ Groq");
+  } catch (e) { log.push(`✗ Groq: ${e.message}`); }
 
   if (trackKey !== state.lastTrackKey) return;
 
@@ -701,6 +725,7 @@ function renderAll() {
 
 function renderSetup() {
   el.spotifyClientId.value  = state.settings.clientId;
+  if (el.groqKey) el.groqKey.value = state.settings.groqKey || "";
   el.redirectUri.value     = getRedirectUri() || state.settings.redirectUri;
   el.authStatusPill.className   = `status-pill ${pillClassForTone(state.authTone)}`;
   el.authStatusPill.textContent = state.authText;
