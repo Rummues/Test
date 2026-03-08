@@ -1,4 +1,4 @@
-const STORAGE_KEYS = { settings: "spotify-chords.settings.ia1", tokens: "spotify-chords.tokens.ia1" };
+const STORAGE_KEYS = { settings: "spotify-chords.settings.ia2", tokens: "spotify-chords.tokens.ia2" };
 const SPOTIFY_SCOPES = ["user-read-currently-playing", "user-read-playback-state"];
 const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -44,14 +44,11 @@ function cacheElements() {
 }
 
 function bindEvents() {
-  // Guardamos las llaves al escribirlas
   el.clientId.addEventListener("input", () => { state.settings.clientId = el.clientId.value.trim(); guardarConfig(); });
   el.geminiKey.addEventListener("input", () => { state.settings.geminiKey = el.geminiKey.value.trim(); guardarConfig(); });
-  
   el.copyUrlBtn.addEventListener("click", async () => { await navigator.clipboard.writeText(getRedirectUri()); setAuthStatus("live", "URI Copiada"); renderSetup(); });
   el.connectBtn.addEventListener("click", startSpotifyLogin);
   el.disconnectBtn.addEventListener("click", disconnectSpotify);
-  
   el.btnTransposeUp.addEventListener("click", () => aplicarTransposicion(1));
   el.btnTransposeDown.addEventListener("click", () => aplicarTransposicion(-1));
 }
@@ -125,51 +122,68 @@ async function fetchSpotifyPlayback() {
 }
 
 // ----------------------------------------------------
-// EL NUEVO CEREBRO: GOOGLE GEMINI AI
+// CEREBRO DE IA MEJORADO A PRUEBA DE FALLOS
 // ----------------------------------------------------
 async function generarAcordesConIA(track) {
   if (!state.settings.geminiKey) {
-    el.chordsView.innerHTML = "⚠️ ¡Atención! Falta tu clave de IA (Gemini API Key).<br>Ponla en el panel izquierdo (Setup) para que el robot funcione.";
+    el.chordsView.innerHTML = "⚠️ ¡Atención! Falta tu clave de IA (Gemini API Key). Ponla en el panel de Setup.";
     el.controlsBar.style.display = 'none';
     return;
   }
 
   const tituloLimpio = track.name.replace(/\(([^)]*(live|remaster|version|edit)[^)]*)\)/gi, "").trim();
   el.controlsBar.style.display = 'none'; 
-  el.chordsView.innerHTML = `Pidiéndole a la Inteligencia Artificial que escriba la tablatura de "${tituloLimpio}"... 🤖🎸`;
+  el.chordsView.innerHTML = `Analizando "${tituloLimpio}" con Inteligencia Artificial...\n(Si hay un error, te mostraré exactamente cuál es). 🤖🎸`;
 
-  const prompt = `Actúa como el mejor músico de sesión del mundo. Necesito los acordes y la letra de la canción "${tituloLimpio}" del artista "${track.artist}".
-  Reglas estrictas e inquebrantables:
-  1. Escribe la letra completa de la canción, y justo encima de las palabras donde van los cambios, coloca el acorde.
-  2. Usa notación americana (C, D, Em, G, etc.).
-  3. NO uses bloques de formato markdown (no uses \`\`\`).
-  4. SOLO devuelve el texto plano puro, sin decir "Aquí tienes", ni saludos, ni explicaciones extra. Solo Título, Artista y Tablatura.`;
+  const prompt = `Escribe una guía de acordes para la canción "${tituloLimpio}" del artista "${track.artist}".
+  Reglas estrictas:
+  1. Escribe la letra completa y coloca los acordes (en notación americana: C, D, Em, etc.) justo arriba de las sílabas donde cambian.
+  2. No uses bloques de código (no uses \`\`\`), solo texto plano.
+  3. No incluyas saludos ni explicaciones. Solo la tablatura.`;
 
   try {
     const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${state.settings.geminiKey}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        // Apagamos los filtros de seguridad para evitar bloqueos por letras de canciones
+        safetySettings: [
+          { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+        ]
+      })
     });
 
-    if (!response.ok) throw new Error("La API Key es inválida o la IA falló.");
+    if (!response.ok) {
+      // Capturamos el error REAL de los servidores de Google
+      const errorData = await response.json();
+      throw new Error(errorData.error?.message || "Error desconocido de la API.");
+    }
 
     const data = await response.json();
+
+    // Verificamos si la IA decidió bloquear la canción por algún motivo extraño
+    if (!data.candidates || data.candidates.length === 0 || !data.candidates[0].content) {
+      const razon = data.promptFeedback?.blockReason || data.candidates?.[0]?.finishReason || "Filtro desconocido";
+      throw new Error(`La IA bloqueó la respuesta. Motivo interno: ${razon}`);
+    }
+
     let textoIA = data.candidates[0].content.parts[0].text;
-    
-    // Limpiamos los rastros de Markdown que a veces deja la IA
     textoIA = textoIA.replace(/```(html|plaintext)?/gi, '').replace(/```/g, '').trim();
 
-    // Guardamos estado y mostramos
     state.currentTranspose = 0;
     el.transposeLabel.innerText = "Tono: 0";
     state.textoOriginalAcordes = textoIA;
     
     el.chordsView.innerHTML = procesarTextoAcordes(textoIA);
-    el.controlsBar.style.display = 'flex'; // ¡AQUÍ ACTIVAMOS LA BARRA DE TRANSPOSICIÓN!
+    el.controlsBar.style.display = 'flex'; // Activamos la barra de transposición
 
   } catch (error) {
-    el.chordsView.innerHTML = "Hubo un error al conectar con la IA. Verifica que tu API Key sea correcta en el panel de Setup.";
+    // AHORA SÍ: Imprimimos el error exacto para no adivinar
+    el.chordsView.innerHTML = `❌ Falló la generación de acordes.\n\nMotivo exacto del sistema:\n${error.message}\n\nAsegúrate de haber guardado bien la API Key.`;
   }
 }
 
@@ -183,10 +197,8 @@ function procesarTextoAcordes(textoPlano) {
   const lineasFormateadas = lineas.map(linea => {
     const tokens = linea.trim().split(/\s+/);
     if (tokens.length === 0 || tokens[0] === "") return linea;
-
     let conteoAcordes = 0;
     for (let t of tokens) { if (chordPattern.test(t)) conteoAcordes++; }
-    
     if ((conteoAcordes / tokens.length) > 0.4) {
       return linea.replace(/\b([CDEFGAB][#b]?(m|maj|dim|aug|sus)?\d*(?:\/[CDEFGAB][#b]?)?)\b/g, '<span class="chord-token" data-original="$1">$1</span>');
     }
@@ -207,7 +219,6 @@ function aplicarTransposicion(pasos) {
   spans.forEach(span => {
     const original = span.getAttribute('data-original');
     const partes = original.split('/'); 
-    
     const partesTranspuestas = partes.map(parte => {
       const match = parte.match(/^([CDEFGAB][#b]?)(.*)$/);
       if (match) {
@@ -215,7 +226,6 @@ function aplicarTransposicion(pasos) {
         const modificador = match[2] || "";
         const flatsToSharps = {'Cb':'B', 'Db':'C#', 'Eb':'D#', 'Fb':'E', 'Gb':'F#', 'Ab':'G#', 'Bb':'A#'};
         if (notaBase.includes('b')) notaBase = flatsToSharps[notaBase];
-        
         let idx = NOTES.indexOf(notaBase);
         if (idx !== -1) {
           let nuevoIdx = (idx + state.currentTranspose) % 12;
@@ -234,7 +244,9 @@ function aplicarTransposicion(pasos) {
 // ----------------------------------------------------
 function renderAll() { renderSetup(); renderNowPlaying(); }
 function renderSetup() {
-  el.clientId.value = state.settings.clientId; el.geminiKey.value = state.settings.geminiKey; el.redirectUri.value = getRedirectUri();
+  el.clientId.value = state.settings.clientId; 
+  el.geminiKey.value = state.settings.geminiKey; 
+  el.redirectUri.value = getRedirectUri();
   el.authStatusPill.className = `status-pill ${state.authTone === 'live' ? 'status-pill-live' : 'status-pill-muted'}`;
   el.authStatusPill.textContent = state.authText;
 }
