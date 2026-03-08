@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <title>Spotify Live Chords</title>
+  <meta name="description" content="Acordes nativos para Spotify.">
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <div class="page-shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <p class="eyebrow">Lector Integrado</p>
+        <h1>Acordes Live</h1>
+        <p class="hero-text">
+          Sincroniza tu cuenta de Spotify. La app extraerá e incrustará el texto puro de los acordes aquí mismo.
+        </p>
+      </div>
+    </header>
+
+    <div class="layout">
+      <aside class="sidebar">
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <p class="section-label">Setup</p>
+              <h2>Conexión</h2>
+            </div>
+            <span class="status-pill" id="auth-status-pill">Sin conectar</span>
+          </div>
+
+          <div class="field-stack">
+            <div>
+              <label for="spotify-client-id">Spotify Client ID</label>
+              <input id="spotify-client-id" placeholder="Pega aquí tu Client ID">
+            </div>
+
+            <div>
+              <label for="redirect-uri">Redirect URI</label>
+              <div class="input-row">
+                <input id="redirect-uri" readonly>
+                <button type="button" class="button button-secondary" id="copy-url-btn">Copiar</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="button-row">
+            <button type="button" class="button button-primary" id="connect-btn">Conectar Spotify</button>
+            <button type="button" class="button button-secondary" id="disconnect-btn">Desconectar</button>
+          </div>
+        </section>
+      </aside>
+
+      <main class="main-panel">
+        <section class="card now-playing-card">
+          <div class="card-head">
+            <div>
+              <p class="section-label">Now Playing</p>
+              <h2>Sonando Ahora</h2>
+            </div>
+            <span class="status-pill status-pill-muted" id="playback-pill">Esperando</span>
+          </div>
+
+          <div class="now-playing-shell">
+            <div class="cover-art" id="cover-art">🎵</div>
+            <div class="track-meta">
+              <p class="track-kicker" id="track-kicker">Esperando conexión...</p>
+              <h3 class="track-title" id="track-title">-</h3>
+              <p class="track-line" id="track-artist">Tus acordes se pegarán abajo.</p>
+              
+              <div class="progress-block">
+                <div class="progress-labels">
+                  <span id="progress-left">0:00</span>
+                  <span id="progress-right">0:00</span>
+                </div>
+                <div class="progress-rail">
+                  <span id="progress-fill"></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <p class="section-label">Lector Nativo</p>
+              <h2>Acordes y Tablatura</h2>
+            </div>
+          </div>
+
+          <p class="helper" style="margin-bottom: 15px; color: #a4aab6;">
+            El texto se extraerá automáticamente. Ej: Si suena Treat You Better de Shawn Mendes, el robot buscará la versión para imprimir y la pegará aquí.
+          </p>
+
+          <pre id="chords-view" style="font-size: 14px; line-height: 1.5;">Conecta Spotify y dale play a tu música para iniciar la extracción...</pre>
+          
+        </section>
+      </main>
+    </div>
+  </div>
+  <script src="./app.js" defer></script>
+</body>
+</html>
