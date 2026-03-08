@@ -436,7 +436,7 @@ async function fetchChordsViaCifraclub(title, artist) {
   const q = encodeURIComponent(`${artist} ${title}`);
 
   const searchHtml = await fetchHtmlViaWorker(
-    `https://www.cifraclub.com.br/busca/?q=${q}`
+    `https://www.cifraclub.com/busca/?q=${q}`
   );
   if (!searchHtml) throw new Error("Cifraclub: sin respuesta en búsqueda");
 
@@ -458,7 +458,7 @@ async function fetchChordsViaCifraclub(title, artist) {
         const songSlug   = first.url || first.song_url || first.cifra_url;
         console.log("[Cifraclub] first result:", JSON.stringify(first).slice(0, 200));
         if (artistSlug && songSlug) {
-          songUrl = `https://www.cifraclub.com.br/${artistSlug}/${songSlug}/`;
+          songUrl = `https://www.cifraclub.com/${artistSlug}/${songSlug}/`;
         }
       }
     } catch (e) {
@@ -470,11 +470,11 @@ async function fetchChordsViaCifraclub(title, artist) {
   if (!songUrl) {
     const artistSlug = artist.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     const titleSlug  = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    songUrl = `https://www.cifraclub.com.br/${artistSlug}/${titleSlug}/`;
+    songUrl = `https://www.cifraclub.com/${artistSlug}/${titleSlug}/`;
     console.log("[Cifraclub] using slug fallback:", songUrl);
   }
 
-  const songHtml = await fetchHtmlViaWorker(songUrl + "?instrument=keyboard");
+  const songHtml = await fetchHtmlViaWorker(songUrl + "?tabs=false&instrument=keyboard");
   if (!songHtml || songHtml.length < 1000) throw new Error("Cifraclub: página de canción vacía");
 
   return parseCifraclubPage(songHtml, title, artist);
