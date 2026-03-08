@@ -447,18 +447,25 @@ async function fetchChordsViaCifraclub(title, artist) {
   if (nextDataMatch) {
     try {
       const nextData = JSON.parse(nextDataMatch[1]);
-      // Results are usually at props.pageProps.result or similar
-      const results = nextData?.props?.pageProps?.result
-                   || nextData?.props?.pageProps?.results
-                   || nextData?.props?.pageProps?.data?.result;
-      console.log("[Cifraclub] nextData keys:", Object.keys(nextData?.props?.pageProps || {}));
-      if (Array.isArray(results) && results.length > 0) {
+      const pageProps = nextData?.props?.pageProps || {};
+      console.log("[Cifraclub] nextData keys:", Object.keys(pageProps));
+
+      // Try all known result locations
+      const candidates = [
+        pageProps.result, pageProps.results,
+        pageProps.data?.result, pageProps.data?.results,
+        pageProps.searchResults, pageProps.cifras,
+      ];
+      const results = candidates.find(c => Array.isArray(c) && c.length > 0);
+
+      if (results) {
         const first = results[0];
-        const artistSlug = first.artist?.url || first.artistUrl || first.artist_url;
-        const songSlug   = first.url || first.song_url || first.cifra_url;
-        console.log("[Cifraclub] first result:", JSON.stringify(first).slice(0, 200));
-        if (artistSlug && songSlug) {
+        console.log("[Cifraclub] first result:", JSON.stringify(first).slice(0, 300));
+        const artistSlug = first?.artist?.url || first?.artistUrl || first?.artist_url || first?.artist?.slug;
+        const songSlug   = first?.url || first?.song_url || first?.cifra_url || first?.slug;
+        if (artistSlug && songSlug && artistSlug !== "undefined" && songSlug !== "undefined") {
           songUrl = `https://www.cifraclub.com/${artistSlug}/${songSlug}/`;
+          console.log("[Cifraclub] URL from JSON:", songUrl);
         }
       }
     } catch (e) {
@@ -466,11 +473,12 @@ async function fetchChordsViaCifraclub(title, artist) {
     }
   }
 
-  // Fallback: try direct URL guess artist/song slug
+  // Fallback: build slug from artist/title (removes accents for reliability)
   if (!songUrl) {
-    const artistSlug = artist.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    const titleSlug  = title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
-    songUrl = `https://www.cifraclub.com/${artistSlug}/${titleSlug}/`;
+    const toSlug = s => s.toLowerCase()
+      .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+    songUrl = `https://www.cifraclub.com/${toSlug(artist)}/${toSlug(title)}/`;
     console.log("[Cifraclub] using slug fallback:", songUrl);
   }
 
