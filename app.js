@@ -1,4 +1,4 @@
-const STORAGE_KEYS = { settings: "spotify-chords.settings.v7", tokens: "spotify-chords.tokens.v7" };
+const STORAGE_KEYS = { settings: "spotify-chords.settings.v8", tokens: "spotify-chords.tokens.v8" };
 const SPOTIFY_SCOPES = ["user-read-currently-playing", "user-read-playback-state"];
 const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -6,7 +6,8 @@ const state = {
   settings: { clientId: "" }, tokens: null, currentTrack: null,
   authTone: "muted", authText: "Sin conectar", playbackTone: "muted", playbackText: "Esperando",
   lastTrackKey: "", lastSyncAt: 0, pollTimer: null, progressTimer: null,
-  currentTranspose: 0 // Estado de la transposición
+  currentTranspose: 0,
+  textoOriginalAcordes: "" // Guardamos el texto puro para no perderlo al transponer
 };
 
 const el = {};
@@ -43,18 +44,11 @@ function cacheElements() {
 }
 
 function bindEvents() {
-  el.clientId.addEventListener("input", () => {
-    state.settings.clientId = el.clientId.value.trim();
-    localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(state.settings));
-  });
-  el.copyUrlBtn.addEventListener("click", async () => {
-    await navigator.clipboard.writeText(getRedirectUri());
-    setAuthStatus("live", "URI Copiada"); renderSetup();
-  });
+  el.clientId.addEventListener("input", () => { state.settings.clientId = el.clientId.value.trim(); localStorage.setItem(STORAGE_KEYS.settings, JSON.stringify(state.settings)); });
+  el.copyUrlBtn.addEventListener("click", async () => { await navigator.clipboard.writeText(getRedirectUri()); setAuthStatus("live", "URI Copiada"); renderSetup(); });
   el.connectBtn.addEventListener("click", startSpotifyLogin);
   el.disconnectBtn.addEventListener("click", disconnectSpotify);
   
-  // Eventos de Transposición
   el.btnTransposeUp.addEventListener("click", () => aplicarTransposicion(1));
   el.btnTransposeDown.addEventListener("click", () => aplicarTransposicion(-1));
 }
@@ -72,45 +66,28 @@ async function startSpotifyLogin() {
   const clientId = state.settings.clientId.trim();
   const redirectUri = getRedirectUri();
   if (!clientId || !redirectUri) return alert("Falta Client ID.");
-  const verifier = randomString(96);
-  const challenge = await pkceChallengeFromVerifier(verifier);
-  const authState = randomString(24);
-  sessionStorage.setItem("spotify-chords.verifier", verifier);
-  sessionStorage.setItem("spotify-chords.state", authState);
-  const params = new URLSearchParams({
-    client_id: clientId, response_type: "code", redirect_uri: redirectUri,
-    scope: SPOTIFY_SCOPES.join(" "), code_challenge_method: "S256",
-    code_challenge: challenge, state: authState
-  });
+  const verifier = randomString(96); const challenge = await pkceChallengeFromVerifier(verifier); const authState = randomString(24);
+  sessionStorage.setItem("spotify-chords.verifier", verifier); sessionStorage.setItem("spotify-chords.state", authState);
+  const params = new URLSearchParams({ client_id: clientId, response_type: "code", redirect_uri: redirectUri, scope: SPOTIFY_SCOPES.join(" "), code_challenge_method: "S256", code_challenge: challenge, state: authState });
   window.location.href = `https://accounts.spotify.com/authorize?${params.toString()}`;
 }
 
 async function maybeFinishSpotifyLogin() {
-  const url = new URL(window.location.href);
-  const code = url.searchParams.get("code");
-  if (!code) return;
+  const url = new URL(window.location.href); const code = url.searchParams.get("code"); if (!code) return;
   try {
     const verifier = sessionStorage.getItem("spotify-chords.verifier");
-    const response = await fetch("https://accounts.spotify.com/api/token", {
-      method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "authorization_code", client_id: state.settings.clientId, code, redirect_uri: getRedirectUri(), code_verifier: verifier })
-    });
-    const payload = await response.json();
-    if (!response.ok) throw new Error("Fallo token");
+    const response = await fetch("https://accounts.spotify.com/api/token", { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", client_id: state.settings.clientId, code, redirect_uri: getRedirectUri(), code_verifier: verifier }) });
+    const payload = await response.json(); if (!response.ok) throw new Error("Fallo token");
     state.tokens = { accessToken: payload.access_token, refreshToken: payload.refresh_token, expiresAt: Date.now() + (payload.expires_in * 1000) - 60000 };
-    localStorage.setItem(STORAGE_KEYS.tokens, JSON.stringify(state.tokens));
-    setAuthStatus("live", "Conectado");
-  } catch (e) { setAuthStatus("error", "Error al conectar"); } 
-  finally { window.history.replaceState({}, "", window.location.pathname); renderSetup(); }
+    localStorage.setItem(STORAGE_KEYS.tokens, JSON.stringify(state.tokens)); setAuthStatus("live", "Conectado");
+  } catch (e) { setAuthStatus("error", "Error al conectar"); } finally { window.history.replaceState({}, "", window.location.pathname); renderSetup(); }
 }
 
 function disconnectSpotify() {
-  stopSpotifyPolling(); localStorage.removeItem(STORAGE_KEYS.tokens);
-  state.tokens = null; state.currentTrack = null;
+  stopSpotifyPolling(); localStorage.removeItem(STORAGE_KEYS.tokens); state.tokens = null; state.currentTrack = null;
   setAuthStatus("muted", "Sin conectar"); setPlaybackStatus("muted", "Esperando");
   el.chordsView.innerHTML = "Conecta Spotify y dale play a tu música para iniciar la extracción...";
-  el.controlsBar.style.display = 'none';
-  renderAll();
+  el.controlsBar.style.display = 'none'; renderAll();
 }
 
 function startSpotifyPolling() { fetchSpotifyPlayback(); state.pollTimer = setInterval(fetchSpotifyPlayback, 4000); startProgressLoop(); }
@@ -126,101 +103,126 @@ async function fetchSpotifyPlayback() {
 
     const track = {
       name: payload.item.name, artist: payload.item.artists[0].name,
-      image: payload.item.album.images[0]?.url || "",
-      durationMs: payload.item.duration_ms, progressMs: payload.progress_ms || 0,
-      isPlaying: payload.is_playing
+      image: payload.item.album.images[0]?.url || "", durationMs: payload.item.duration_ms, progressMs: payload.progress_ms || 0, isPlaying: payload.is_playing
     };
-
     const trackKey = `${track.name}-${track.artist}`;
     state.currentTrack = track; state.lastSyncAt = Date.now();
     setPlaybackStatus(track.isPlaying ? "live" : "warn", track.isPlaying ? "Sonando" : "Pausado");
     
     if (trackKey !== state.lastTrackKey) {
-      state.lastTrackKey = trackKey;
-      renderNowPlaying();
-      extraerAcordesNativos(track); 
+      state.lastTrackKey = trackKey; renderNowPlaying();
+      extraerAcordesHydra(track); 
     } else { renderNowPlaying(); }
-  } catch (e) { setPlaybackStatus("muted", "En pausa o cerrado"); renderNowPlaying(); }
+  } catch (e) { setPlaybackStatus("muted", "En pausa"); renderNowPlaying(); }
 }
 
 // ----------------------------------------------------
-// MOTOR DE PROCESAMIENTO DE TEXTO, COLOR Y TRANSPOSICIÓN
+// MOTOR HYDRA: MÚLTIPLES BÚSQUEDAS EN PARALELO
 // ----------------------------------------------------
-
-async function extraerAcordesNativos(track) {
+async function extraerAcordesHydra(track) {
   const tituloLimpio = track.name.replace(/\(([^)]*(live|remaster|version|edit)[^)]*)\)/gi, "").trim();
   const artista = track.artist;
   
-  el.chordsView.innerHTML = `Extrayendo acordes de "${tituloLimpio}"... ⏳<br>Si tarda, es porque el proxy gratuito está en cola.`;
-  el.controlsBar.style.display = 'none'; // Ocultamos controles mientras carga
-
-  const formatUrl = (str) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9\s]/g, "").trim().replace(/\s+/g, "-").toLowerCase();
+  el.chordsView.innerHTML = `Lanzando múltiples buscadores para "${tituloLimpio}"... 🚀`;
+  el.controlsBar.style.display = 'flex'; // Muestra la barra desde el principio para que sepas que existe
   
-  try {
-    const proxyUrl = `https://api.allorigins.win/get?url=${encodeURIComponent(`https://www.cifraclub.com/${formatUrl(artista)}/${formatUrl(tituloLimpio)}/imprimir.html`)}`;
-    const res = await fetch(proxyUrl);
-    const data = await res.json();
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(data.contents, 'text/html');
-    const bloqueAcordes = doc.querySelector('pre');
+  // Limpiadores de URL
+  const formatEChords = (str) => str.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-zA-Z0-9\s]/g, "").trim().replace(/\s+/g, "-").toLowerCase();
+  const queryArtista = formatEChords(artista);
+  const queryCancion = formatEChords(tituloLimpio);
 
-    if (bloqueAcordes && bloqueAcordes.textContent.trim().length > 0) {
-      // Reseteamos el transpose
-      state.currentTranspose = 0;
-      el.transposeLabel.innerText = "Tono: 0";
-      
-      // Procesamos el texto para detectar y colorear acordes
-      const textoFormateado = procesarTextoAcordes(bloqueAcordes.textContent);
-      el.chordsView.innerHTML = textoFormateado;
-      el.controlsBar.style.display = 'flex'; // Mostramos controles
-    } else {
-      el.chordsView.innerHTML = `No se encontró texto puro para esta canción en la base de datos de CifraClub.`;
-    }
+  // PROMESA 1: E-Chords vía Corsproxy (Rápido para inglés)
+  const fetchEChords = async () => {
+    const url = `https://corsproxy.io/?url=${encodeURIComponent(`https://www.e-chords.com/chords/${queryArtista}/${queryCancion}`)}`;
+    const res = await fetch(url);
+    const text = await res.text();
+    const doc = new DOMParser().parseFromString(text, 'text/html');
+    const pre = doc.querySelector('pre.core') || doc.querySelector('pre');
+    if (pre && pre.textContent.trim().length > 50) return { fuente: "E-Chords", texto: pre.textContent };
+    throw new Error("No en E-Chords");
+  };
+
+  // PROMESA 2: CifraClub vía Codetabs (Mejor proxy crudo)
+  const fetchCifraClubRapido = async () => {
+    const url = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(`https://www.cifraclub.com/${queryArtista}/${queryCancion}/imprimir.html`)}`;
+    const res = await fetch(url);
+    const text = await res.text();
+    const doc = new DOMParser().parseFromString(text, 'text/html');
+    const pre = doc.querySelector('pre');
+    if (pre && pre.textContent.trim().length > 50) return { fuente: "CifraClub", texto: pre.textContent };
+    throw new Error("No en CifraClub");
+  };
+
+  // PROMESA 3: CifraClub vía AllOrigins (Fallo de seguridad)
+  const fetchCifraClubLento = async () => {
+    const url = `https://api.allorigins.win/get?url=${encodeURIComponent(`https://www.cifraclub.com/${queryArtista}/${queryCancion}/imprimir.html`)}`;
+    const res = await fetch(url);
+    const data = await res.json();
+    const doc = new DOMParser().parseFromString(data.contents, 'text/html');
+    const pre = doc.querySelector('pre');
+    if (pre && pre.textContent.trim().length > 50) return { fuente: "CifraClub (Backup)", texto: pre.textContent };
+    throw new Error("No en AllOrigins");
+  };
+
+  try {
+    // CARRERA DE PROMESAS: El primero que responda con éxito, gana.
+    const resultado = await Promise.any([fetchEChords(), fetchCifraClubRapido(), fetchCifraClubLento()]);
+    
+    // Reseteamos estados
+    state.currentTranspose = 0;
+    el.transposeLabel.innerText = "Tono: 0";
+    state.textoOriginalAcordes = resultado.texto.trim(); // Guardamos el original
+    
+    el.chordsView.innerHTML = procesarTextoAcordes(state.textoOriginalAcordes);
+    console.log(`¡Ganó ${resultado.fuente}!`); // Para que veas quién fue más rápido en la consola
+
   } catch (error) {
-    el.chordsView.innerHTML = "Error de conexión con el Proxy. Intenta pausar y darle play de nuevo.";
+    el.chordsView.innerHTML = "Ninguno de los 3 motores pudo extraer el texto. Es probable que la canción tenga fuertes bloqueos de copyright en las páginas de tablaturas.";
   }
 }
 
-// Función que detecta si una línea es de acordes y los envuelve en un <span> verde
+// ----------------------------------------------------
+// INTELIGENCIA LÉXICA Y TRANSPOSICIÓN REAL
+// ----------------------------------------------------
 function procesarTextoAcordes(textoPlano) {
   const lineas = textoPlano.split('\n');
-  const chordPattern = /^[CDEFGAB][#b]?(m|maj|dim|aug|sus)?\d*(?:\/[CDEFGAB][#b]?)?$/;
+  const chordPattern = /^[CDEFGAB][#b]?(m|maj|dim|aug|sus)?\d*(?:\/[CDEFGAB][#b]?)?$/i;
   
   const lineasFormateadas = lineas.map(linea => {
     const tokens = linea.trim().split(/\s+/);
     if (tokens.length === 0 || tokens[0] === "") return linea;
 
-    // Evaluamos si más del 60% de las palabras de esta línea parecen acordes
     let conteoAcordes = 0;
     for (let t of tokens) { if (chordPattern.test(t)) conteoAcordes++; }
     
-    if ((conteoAcordes / tokens.length) > 0.6) {
-      // Es una línea de acordes. Reemplazamos cada acorde con un span coloreado.
-      return linea.replace(/([CDEFGAB][#b]?(m|maj|dim|aug|sus)?\d*(\/[CDEFGAB][#b]?)?)/g, '<span class="chord-token" data-original="$1">$1</span>');
+    if ((conteoAcordes / tokens.length) > 0.4) {
+      // Es línea de acordes.
+      return linea.replace(/\b([CDEFGAB][#b]?(m|maj|dim|aug|sus)?\d*(?:\/[CDEFGAB][#b]?)?)\b/g, '<span class="chord-token" data-original="$1">$1</span>');
     }
-    return linea; // Es una línea de letra normal
+    return linea;
   });
-  
   return lineasFormateadas.join('\n');
 }
 
-// Función matemática para cambiar el tono (Transpose)
 function aplicarTransposicion(pasos) {
+  if (!state.textoOriginalAcordes) return;
   state.currentTranspose += pasos;
   el.transposeLabel.innerText = `Tono: ${state.currentTranspose > 0 ? '+' : ''}${state.currentTranspose}`;
   
-  const spans = document.querySelectorAll('.chord-token');
+  // Reprocesamos todo el texto original para evitar errores de transposición múltiple
+  const textoPintado = procesarTextoAcordes(state.textoOriginalAcordes);
+  el.chordsView.innerHTML = textoPintado; // Restauramos los spans base
+  
+  const spans = el.chordsView.querySelectorAll('.chord-token');
   spans.forEach(span => {
     const original = span.getAttribute('data-original');
-    const partes = original.split('/'); // Por si hay bajos como D/F#
+    const partes = original.split('/'); 
     
     const partesTranspuestas = partes.map(parte => {
       const match = parte.match(/^([CDEFGAB][#b]?)(.*)$/);
       if (match) {
         let notaBase = match[1];
-        const modificador = match[2];
-        
-        // Convertimos bemoles a sostenidos para el cálculo matemático
+        const modificador = match[2] || "";
         const flatsToSharps = {'Cb':'B', 'Db':'C#', 'Eb':'D#', 'Fb':'E', 'Gb':'F#', 'Ab':'G#', 'Bb':'A#'};
         if (notaBase.includes('b')) notaBase = flatsToSharps[notaBase];
         
@@ -233,15 +235,13 @@ function aplicarTransposicion(pasos) {
       }
       return parte;
     });
-    
     span.innerText = partesTranspuestas.join('/');
   });
 }
 
 // ----------------------------------------------------
-// RENDERIZADO Y AUTO-SCROLL
+// RENDERIZADO Y SCROLL
 // ----------------------------------------------------
-
 function renderAll() { renderSetup(); renderNowPlaying(); }
 function renderSetup() {
   el.clientId.value = state.settings.clientId; el.redirectUri.value = getRedirectUri();
@@ -264,16 +264,11 @@ function updateProgressDisplay() {
   const elapsed = Math.max(0, Date.now() - state.lastSyncAt);
   const progMs = Math.min(state.currentTrack.progressMs + elapsed, state.currentTrack.durationMs);
   
-  el.progressLeft.textContent = formatMs(progMs);
-  el.progressRight.textContent = formatMs(state.currentTrack.durationMs);
-  
-  const ratio = progMs / state.currentTrack.durationMs;
-  el.progressFill.style.width = `${ratio * 100}%`;
+  el.progressLeft.textContent = formatMs(progMs); el.progressRight.textContent = formatMs(state.currentTrack.durationMs);
+  const ratio = progMs / state.currentTrack.durationMs; el.progressFill.style.width = `${ratio * 100}%`;
 
-  // LA MAGIA DEL AUTO-SCROLL
   if (el.autoScrollCb && el.autoScrollCb.checked && el.chordsView.scrollHeight > el.chordsView.clientHeight) {
     const maxScroll = el.chordsView.scrollHeight - el.chordsView.clientHeight;
-    // Agregamos un pequeño retraso al inicio para que no baje de golpe en los intros
     el.chordsView.scrollTop = ratio * maxScroll;
   }
 }
