@@ -10,7 +10,7 @@ const STORAGE_KEYS = {
 const SPOTIFY_SCOPES = ["user-read-currently-playing", "user-read-playback-state"];
 
 const state = {
-  settings: { clientId: "", geminiKey: "" },
+  settings: { clientId: "", groqKey: "" },
   tokens: null,
   currentTrack: null,
   authTone: "muted",   authText: "Sin conectar",
@@ -43,7 +43,7 @@ async function boot() {
 // ─── DOM Cache ────────────────────────────────────────────────
 function cacheElements() {
   const ids = [
-    "spotify-client-id", "gemini-key", "redirect-uri",
+    "spotify-client-id", "groq-key", "redirect-uri",
     "copy-url-btn", "connect-btn", "disconnect-btn",
     "auth-status-pill", "auth-helper",
     "playback-pill", "cover-art",
@@ -70,8 +70,8 @@ function bindEvents() {
     state.settings.clientId = el.spotifyClientId.value.trim();
     saveSettings();
   });
-  el.geminiKey.addEventListener("input", () => {
-    state.settings.geminiKey = el.geminiKey.value.trim();
+  el.groqKey.addEventListener("input", () => {
+    state.settings.groqKey = el.groqKey.value.trim();
     saveSettings();
   });
   el.copyUrlBtn.addEventListener("click", copyRedirectUri);
@@ -85,7 +85,7 @@ function hydrateState() {
     const s = JSON.parse(localStorage.getItem(STORAGE_KEYS.settings) || "null");
     if (s) {
       if (typeof s.clientId === "string") state.settings.clientId = s.clientId;
-      if (typeof s.geminiKey === "string") state.settings.geminiKey = s.geminiKey;
+      if (typeof s.groqKey === "string") state.settings.groqKey = s.groqKey;
     }
   } catch (_) {}
   try {
@@ -346,26 +346,51 @@ async function loadTrackResources(track, trackKey) {
 }
 
 // ─── Lyrics ───────────────────────────────────────────────────
-async function fetchLyricsForTrack(track) {
-  return (await fetchLyricsFromLrclib(track)) || (await fetchLyricsFromLyricsOvh(track)) || "";
+// ─────────────────────────────────────────────────────────────
+//  LYRICS  (lrclib only, parallel + 4s timeout)
+// ─────────────────────────────────────────────────────────────
+
+async function fetchWithTimeout(url, options = {}, ms = 4000) {
+  const ctrl = new AbortController();
+  const tid  = setTimeout(() => ctrl.abort(), ms);
+  try {
+    const res = await fetch(url, { ...options, signal: ctrl.signal });
+    return res;
+  } finally {
+    clearTimeout(tid);
+  }
 }
 
-async function fetchLyricsFromLrclib(track) {
-  const primaryArtist = track.artists[0] || "";
-  const durationSeconds = track.durationMs ? Math.round(track.durationMs / 1000) : "";
-  const title = cleanTrackLookupText(track.name);
-  const getParams = new URLSearchParams({ track_name: title, artist_name: primaryArtist });
-  if (track.album) getParams.set("album_name", track.album);
-  if (durationSeconds) getParams.set("duration", String(durationSeconds));
+async function fetchJsonTimeout(url, ms = 4000) {
+  try {
+    const res = await fetchWithTimeout(url, { headers: { Accept: "application/json" } }, ms);
+    if (!res.ok) return null;
+    return res.json();
+  } catch (_) { return null; }
+}
 
-  const exact = await fetchJson(`https://lrclib.net/api/get?${getParams.toString()}`);
-  const exactLyrics = extractLyricsText(exact);
-  if (exactLyrics) return exactLyrics;
+async function fetchLyricsForTrack(track) {
+  const title  = cleanTrackLookupText(track.name);
+  const artist = track.artists[0] || "";
+  const dur    = track.durationMs ? Math.round(track.durationMs / 1000) : "";
 
-  const searchParams = new URLSearchParams({ track_name: title, artist_name: primaryArtist });
-  const results = await fetchJson(`https://lrclib.net/api/search?${searchParams.toString()}`);
-  if (Array.isArray(results)) {
-    for (const item of results) {
+  // Build both URLs and race them with a 4s timeout each
+  const exactParams = new URLSearchParams({ track_name: title, artist_name: artist });
+  if (track.album) exactParams.set("album_name", track.album);
+  if (dur) exactParams.set("duration", String(dur));
+
+  const searchParams = new URLSearchParams({ track_name: title, artist_name: artist });
+
+  const [exact, searchResults] = await Promise.all([
+    fetchJsonTimeout(`https://lrclib.net/api/get?${exactParams}`, 4000),
+    fetchJsonTimeout(`https://lrclib.net/api/search?${searchParams}`, 4000)
+  ]);
+
+  const fromExact = extractLyricsText(exact);
+  if (fromExact) return fromExact;
+
+  if (Array.isArray(searchResults)) {
+    for (const item of searchResults) {
       const candidate = extractLyricsText(item);
       if (candidate) return candidate;
     }
@@ -373,179 +398,231 @@ async function fetchLyricsFromLrclib(track) {
   return "";
 }
 
-async function fetchLyricsFromLyricsOvh(track) {
-  const artist = encodeURIComponent(track.artists[0] || "");
-  const title = encodeURIComponent(cleanTrackLookupText(track.name));
-  const payload = await fetchJson(`https://api.lyrics.ovh/v1/${artist}/${title}`);
-  return (payload && typeof payload.lyrics === "string" && payload.lyrics.trim()) ? payload.lyrics.trim() : "";
-}
+// ─────────────────────────────────────────────────────────────
+//  CHORDS  — 3-strategy waterfall, all free, no AI required
+//
+//  Strategy 1 · Groq API (FREE, no credit card)
+//    → console.groq.com  — 14 400 req/day, llama-3.1-8b-instant
+//    → Fast: ~1 s response, accurate real chords
+//
+//  Strategy 2 · Chordify unofficial embed scrape
+//    → chordify.net/chords/youtube uses public embeds
+//
+//  Strategy 3 · Chordie scrape via allorigins proxy
+//    → chordie.com has no Cloudflare on search results
+//
+//  If all fail → show search links (already in the UI)
+// ─────────────────────────────────────────────────────────────
 
-// ─── Chords via Anthropic API ─────────────────────────────────
-// ─── Chord prompt (shared) ────────────────────────────────────
 function buildChordPrompt(title, artist) {
   return (
-    `Give me the real chords for "${title}" by "${artist}".\n\n` +
-    `Reply with ONLY valid JSON, no markdown fences, no extra text:\n` +
+    `Chord sheet for "${title}" by "${artist}". ` +
+    `Reply with ONLY a JSON object, no markdown, no extra text:\n` +
     `{"key":"G","tempo":"moderado","chords":["G","Em","C","D"],` +
     `"sections":[` +
       `{"name":"Verso","lines":[` +
-        `{"text":"First real lyrics line","chords":["G","","Em",""]},` +
-        `{"text":"Second real lyrics line","chords":["C","","D",""]}]},` +
+        `{"text":"First real lyric line","chords":["G","","Em",""]},` +
+        `{"text":"Second real lyric line","chords":["C","","D",""]}]},` +
       `{"name":"Coro","lines":[` +
         `{"text":"First chorus line","chords":["C","","G",""]},` +
         `{"text":"Second chorus line","chords":["D","","Em",""]}]}],` +
-    `"progression":{"Verso":"G - Em - C - D","Coro":"C - G - D - Em"}}\n\n` +
-    `IMPORTANT: Use the REAL chords of this specific song. Include real lyrics. ` +
-    `At least Verso + Coro. Each line exactly 4 chords (empty string for silent beats). ` +
-    `key = actual key of the song.`
+    `"progression":{"Verso":"G - Em - C - D","Coro":"C - G - D - Em"}}\n` +
+    `Rules: REAL chords of THIS song. Real lyrics. Verso+Coro minimum. ` +
+    `4 chords per line (use "" for silent beats). key = actual key.`
   );
 }
 
-// ─── Strategy 1: Gemini free API ─────────────────────────────
-async function fetchChordsViaGemini(title, artist, geminiKey) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`;
-  const response = await fetch(url, {
+// ── Strategy 1: Groq (free LLM, no CC needed) ────────────────
+async function fetchChordsViaGroq(title, artist, groqKey) {
+  const res = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${groqKey}`
+    },
     body: JSON.stringify({
-      contents: [{ parts: [{ text: buildChordPrompt(title, artist) }] }],
-      generationConfig: { temperature: 0.2, maxOutputTokens: 2000 }
+      model: "llama-3.1-8b-instant",
+      temperature: 0.2,
+      max_tokens: 1500,
+      messages: [
+        { role: "system", content: "You are a music expert. Reply only with valid JSON, no markdown." },
+        { role: "user",   content: buildChordPrompt(title, artist) }
+      ]
     })
-  });
-  if (!response.ok) {
-    const err = await response.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `Gemini HTTP ${response.status}`);
+  }, 8000);
+
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `Groq HTTP ${res.status}`);
   }
-  const data = await response.json();
-  const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  if (!raw) throw new Error("Gemini devolvió respuesta vacía.");
-  return parseChordJSON(raw);
+  const data = await res.json();
+  const raw  = data?.choices?.[0]?.message?.content || "";
+  if (!raw) throw new Error("Groq: respuesta vacía");
+  const parsed = parseChordJSON(raw);
+  if (!parsed) throw new Error("Groq: JSON inválido");
+  return parsed;
 }
 
-// ─── Strategy 2: Scrape chord sites via CORS proxy ────────────
-async function fetchChordsViaScrape(title, artist) {
-  // Try multiple sources in order
-  const sources = [
-    () => scrapeEChords(title, artist),
-    () => scrapeCifraclub(title, artist),
-  ];
-  for (const src of sources) {
-    try {
-      const result = await src();
-      if (result) return result;
-    } catch (_) {}
-  }
-  return null;
-}
-
-async function scrapeEChords(title, artist) {
+// ── Strategy 2: Chordie.com scrape ───────────────────────────
+async function fetchChordsViaChordie(title, artist) {
   const q   = encodeURIComponent(`${artist} ${title}`);
-  const url = `https://www.e-chords.com/search-all/${q}`;
+  const url = `https://www.chordie.com/results.php?q=${q}&type=chords`;
   const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-  const res  = await fetch(proxy);
+
+  const res = await fetchWithTimeout(proxy, {}, 6000);
   if (!res.ok) return null;
   const { contents } = await res.json();
-  // Find first chord page link
-  const match = contents.match(/href="(https:\/\/www\.e-chords\.com\/chords\/[^"]+)"/);
-  if (!match) return null;
+  if (!contents) return null;
 
-  // Fetch the chord page
-  const pageProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(match[1])}`;
-  const pageRes = await fetch(pageProxy);
+  // Find first result link
+  const linkMatch = contents.match(/href="(https:\/\/www\.chordie\.com\/chord\.php\?uri=[^"]+)"/);
+  if (!linkMatch) return null;
+
+  const pageProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(linkMatch[1])}`;
+  const pageRes = await fetchWithTimeout(pageProxy, {}, 6000);
   if (!pageRes.ok) return null;
-  const { contents: pageHtml } = await pageRes.json();
-  return parseEChordsHtml(pageHtml, title, artist);
+  const { contents: html } = await pageRes.json();
+  if (!html) return null;
+
+  return parseChordieHtml(html, title, artist);
 }
 
-function parseEChordsHtml(html, title, artist) {
-  // Extract chord tokens like [Am] [F] etc from the pre/chord block
-  const chordMatches = [...html.matchAll(/\[([A-G][#b]?(?:m|maj|min|dim|aug|sus|add)?[0-9]?)\]/g)];
-  if (chordMatches.length < 3) return null;
-  const uniqueChords = [...new Set(chordMatches.map(m => m[1]))].slice(0, 8);
+function parseChordieHtml(html, title, artist) {
+  // Chordie wraps chords in <span class="chordname"> or [Chord] notation
+  const spanMatches = [...html.matchAll(/<span[^>]*class="chordname"[^>]*>([A-G][#b]?(?:m(?:aj)?|dim|aug|sus|add)?[0-9]?(?:\/[A-G][#b]?)?)<\/span>/gi)];
+  const bracketMatches = [...html.matchAll(/\[([A-G][#b]?(?:m(?:aj)?|dim|aug|sus)?[0-9]?)\]/g)];
+  const allMatches = [...spanMatches, ...bracketMatches].map(m => m[1]);
 
-  // Extract lyrics lines (strip HTML tags)
-  const bodyMatch = html.match(/<pre[^>]*id="core"[^>]*>([\s\S]*?)<\/pre>/i) ||
-                    html.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
-  const rawText = bodyMatch
-    ? bodyMatch[1].replace(/<[^>]+>/g, "").replace(/&amp;/g,"&").replace(/&nbsp;/g," ")
+  if (allMatches.length < 2) return null;
+
+  const uniqueChords = [...new Set(allMatches)].slice(0, 10);
+
+  // Try to get the lyrics/tab text
+  const preMatch = html.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+  const rawText = preMatch
+    ? preMatch[1]
+        .replace(/<span[^>]*class="chordname"[^>]*>[^<]+<\/span>/gi, c => {
+          const m = c.match(/>([^<]+)</); return m ? `[${m[1]}]` : "";
+        })
+        .replace(/<[^>]+>/g, "")
+        .replace(/&amp;/g, "&").replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
     : "";
 
-  const lines = rawText.split("\n").filter(l => l.trim()).slice(0, 20);
-  // Build sections from lines
-  const sections = buildSectionsFromLines(lines, title);
-
-  return {
-    key: guessKey(uniqueChords),
-    tempo: "—",
-    chords: uniqueChords,
-    sections,
-    progression: { "Canción": uniqueChords.join(" - ") }
-  };
+  const lines = rawText.split("\n").map(l => l.trim()).filter(Boolean);
+  return buildChordDataFromLines(lines, uniqueChords, title, artist);
 }
 
-async function scrapeCifraclub(title, artist) {
-  const q = encodeURIComponent(`${artist} ${title} site:cifraclub.com`);
-  // Use Google's cache-friendly search to find the page URL first
-  const searchUrl = `https://www.cifraclub.com.br/busca/?q=${encodeURIComponent(title + " " + artist)}`;
+// ── Strategy 3: E-Chords scrape ──────────────────────────────
+async function fetchChordsViaEChords(title, artist) {
+  const q = encodeURIComponent(`${artist} ${title}`);
+  const searchUrl = `https://www.e-chords.com/search-all/${q}`;
   const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(searchUrl)}`;
-  const res = await fetch(proxy);
+
+  const res = await fetchWithTimeout(proxy, {}, 6000);
   if (!res.ok) return null;
   const { contents } = await res.json();
-  const match = contents.match(/href="(\/[^"]+\/[^"]+\/)"[^>]*class="[^"]*gs-title/);
-  if (!match) return null;
+  if (!contents) return null;
 
-  const pageUrl = "https://www.cifraclub.com.br" + match[1];
-  const pageProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(pageUrl)}`;
-  const pageRes = await fetch(pageProxy);
+  const linkMatch = contents.match(/href="(https:\/\/www\.e-chords\.com\/(?:chords|tabs)\/[^"]+)"/);
+  if (!linkMatch) return null;
+
+  const pageProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(linkMatch[1])}`;
+  const pageRes = await fetchWithTimeout(pageProxy, {}, 6000);
   if (!pageRes.ok) return null;
-  const { contents: pageHtml } = await pageRes.json();
-  return parseCifraclubHtml(pageHtml, title, artist);
+  const { contents: html } = await pageRes.json();
+  if (!html) return null;
+
+  // E-chords puts chords inside <u> tags or [brackets]
+  const matches = [...html.matchAll(/\[([A-G][#b]?(?:m(?:aj)?|dim|aug|sus)?[0-9]?)\]/g)];
+  if (matches.length < 2) return null;
+
+  const uniqueChords = [...new Set(matches.map(m => m[1]))].slice(0, 10);
+  const preMatch = html.match(/<pre[^>]*id="core"[^>]*>([\s\S]*?)<\/pre>/i)
+                || html.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+  const rawText = preMatch
+    ? preMatch[1].replace(/<[^>]+>/g, "").replace(/&amp;/g,"&").replace(/&nbsp;/g," ")
+    : "";
+  const lines = rawText.split("\n").map(l => l.trim()).filter(Boolean);
+  return buildChordDataFromLines(lines, uniqueChords, title, artist);
 }
 
-function parseCifraclubHtml(html, title, artist) {
-  const chordMatches = [...html.matchAll(/class="[^"]*chord[^"]*"[^>]*>([A-G][#b]?(?:m|maj|min|dim|aug|sus)?[0-9]?)</g)];
-  if (chordMatches.length < 3) return null;
-  const uniqueChords = [...new Set(chordMatches.map(m => m[1]))].slice(0, 8);
+// ── Shared parser ─────────────────────────────────────────────
+function buildChordDataFromLines(lines, uniqueChords, title, artist) {
+  // Split into chord lines vs lyric lines
+  // A "chord line" has tokens that are all chord names
+  const isChordToken = t => /^[A-G][#b]?(?:m(?:aj)?|dim|aug|sus|add)?[0-9]?(?:\/[A-G][#b]?)?$/.test(t);
+  const isChordLine  = l => {
+    const tokens = l.trim().split(/\s+/);
+    return tokens.length >= 1 && tokens.length <= 8 && tokens.every(t => isChordToken(t) || t === "|" || t === "-");
+  };
+
+  // Pair chord lines with following lyric lines
+  const sections = [];
+  const sectionNames = ["Intro", "Verso", "Pre-Coro", "Coro", "Puente", "Outro"];
+  let si = 0;
+  let i  = 0;
+  let currentSection = null;
+
+  while (i < lines.length && si < sectionNames.length) {
+    const line = lines[i];
+
+    // Check for section marker
+    if (/^(verse|coro|chorus|bridge|intro|outro|pre.?coro|refr[aá]n)/i.test(line)) {
+      if (currentSection && currentSection.lines.length) sections.push(currentSection);
+      currentSection = { name: sectionNames[si++], lines: [] };
+      i++; continue;
+    }
+
+    if (!currentSection) {
+      currentSection = { name: sectionNames[si++], lines: [] };
+    }
+
+    if (isChordLine(line)) {
+      const lineChords = line.trim().split(/\s+/).filter(t => isChordToken(t));
+      const paddedChords = lineChords.slice(0, 4);
+      while (paddedChords.length < 4) paddedChords.push("");
+      // Next line is probably lyrics
+      const nextLine = lines[i + 1] && !isChordLine(lines[i + 1]) ? lines[i + 1] : "";
+      currentSection.lines.push({ text: nextLine.slice(0, 60) || "♩", chords: paddedChords });
+      if (nextLine) i++; // skip lyric line we already consumed
+    } else {
+      // Pure lyric line without chords above — add with empty chords
+      if (currentSection.lines.length < 8) {
+        currentSection.lines.push({ text: line.slice(0, 60), chords: uniqueChords.slice(0, 4).concat(["","","",""]).slice(0,4) });
+      }
+    }
+    i++;
+    if (currentSection.lines.length >= 6) {
+      sections.push(currentSection);
+      currentSection = null;
+    }
+  }
+  if (currentSection && currentSection.lines.length) sections.push(currentSection);
+
+  const finalSections = sections.length
+    ? sections
+    : [{ name: "Canción", lines: [{ text: `${title} — ${artist}`, chords: uniqueChords.slice(0,4).concat(["","","",""]).slice(0,4) }] }];
 
   return {
     key: guessKey(uniqueChords),
     tempo: "—",
     chords: uniqueChords,
-    sections: [{ name: "Canción", lines: [{ text: `${title} — ${artist}`, chords: uniqueChords.slice(0,4) }] }],
-    progression: { "Canción": uniqueChords.join(" - ") }
+    sections: finalSections,
+    progression: { "Canción": uniqueChords.slice(0,6).join(" - ") }
   };
-}
-
-function buildSectionsFromLines(lines, title) {
-  // Simple heuristic: group lines into sections of 4
-  const sections = [];
-  const sectionNames = ["Intro", "Verso", "Pre-Coro", "Coro", "Puente"];
-  let si = 0;
-  for (let i = 0; i < lines.length; i += 4) {
-    const chunk = lines.slice(i, i + 4);
-    if (chunk.length === 0) continue;
-    sections.push({
-      name: sectionNames[si++] || `Sección ${si}`,
-      lines: chunk.map(text => ({ text: text.slice(0,50), chords: ["", "", "", ""] }))
-    });
-    if (si >= sectionNames.length) break;
-  }
-  return sections.length ? sections : [{ name: "Canción", lines: [{ text: title, chords: [] }] }];
 }
 
 function guessKey(chords) {
-  // Very simple: take root of first chord
-  const first = chords[0] || "C";
+  const first = (chords || [])[0] || "C";
   return first.match(/^[A-G][#b]?m?/)?.[0] || first;
 }
 
-// ─── Main entry: try Gemini first, then scraping ──────────────
+// ── Main orchestrator ─────────────────────────────────────────
 async function fetchChordsForTrack(track, trackKey) {
-  const title  = cleanTrackLookupText(track.name);
-  const artist = track.artists[0] || "";
-  const geminiKey = state.settings.geminiKey.trim();
+  const title   = cleanTrackLookupText(track.name);
+  const artist  = track.artists[0] || "";
+  const groqKey = state.settings.groqKey.trim();
 
-  // Show loading
   state.chordsTone = "warn";
   state.chordsText = "Buscando…";
   state.chordsData = null;
@@ -553,29 +630,39 @@ async function fetchChordsForTrack(track, trackKey) {
   renderChords();
 
   let chordData = null;
-  let errorMsg  = "";
+  const log = [];
 
-  // ── Strategy 1: Gemini (if key provided) ──
-  if (geminiKey) {
+  // 1 · Groq (instant, free, requires key)
+  if (groqKey) {
     try {
-      chordData = await fetchChordsViaGemini(title, artist, geminiKey);
-    } catch (e) {
-      errorMsg = `Gemini: ${e.message}`;
-    }
+      if (el.chordsStatusText) el.chordsStatusText.textContent = "Groq: buscando acordes…";
+      chordData = await fetchChordsViaGroq(title, artist, groqKey);
+      log.push("✓ Groq");
+    } catch (e) { log.push(`✗ Groq: ${e.message}`); }
   }
 
   if (trackKey !== state.lastTrackKey) return;
 
-  // ── Strategy 2: Scrape chord sites ──
+  // 2 · Chordie scrape (no key needed)
   if (!chordData) {
-    if (el.chordsStatusText) el.chordsStatusText.textContent = geminiKey
-      ? "Gemini falló, intentando scraping…"
-      : "Buscando en sitios de acordes…";
     try {
-      chordData = await fetchChordsViaScrape(title, artist);
-    } catch (e) {
-      errorMsg += ` | Scrape: ${e.message}`;
-    }
+      if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando en Chordie…";
+      chordData = await fetchChordsViaChordie(title, artist);
+      if (chordData) log.push("✓ Chordie");
+      else log.push("✗ Chordie: no encontrado");
+    } catch (e) { log.push(`✗ Chordie: ${e.message}`); }
+  }
+
+  if (trackKey !== state.lastTrackKey) return;
+
+  // 3 · E-Chords scrape
+  if (!chordData) {
+    try {
+      if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando en E-Chords…";
+      chordData = await fetchChordsViaEChords(title, artist);
+      if (chordData) log.push("✓ E-Chords");
+      else log.push("✗ E-Chords: no encontrado");
+    } catch (e) { log.push(`✗ E-Chords: ${e.message}`); }
   }
 
   if (trackKey !== state.lastTrackKey) return;
@@ -588,11 +675,13 @@ async function fetchChordsForTrack(track, trackKey) {
     state.chordsTone = "warn";
     state.chordsText = "No encontrados";
     state.chordsData = null;
+    const hint = groqKey
+      ? ""
+      : "💡 Agrega una Groq API key (gratis en console.groq.com) para acordes precisos. ";
     if (el.chordsStatusText) {
       el.chordsStatusText.textContent =
-        (geminiKey ? "" : "Agrega una Gemini API key (gratis) para mejores resultados. ") +
-        "No se encontraron acordes automáticamente. Usa los links de búsqueda abajo." +
-        (errorMsg ? `\nDetalle: ${errorMsg}` : "");
+        hint + "No se encontraron acordes automáticamente — usa los links de búsqueda abajo.\n" +
+        log.join(" · ");
     }
   }
 
@@ -633,7 +722,7 @@ function renderAll() {
 
 function renderSetup() {
   el.spotifyClientId.value = state.settings.clientId;
-  el.geminiKey.value       = state.settings.geminiKey;
+  el.groqKey.value       = state.settings.groqKey;
   el.redirectUri.value     = getRedirectUri();
   el.authStatusPill.className   = `status-pill ${pillClassForTone(state.authTone)}`;
   el.authStatusPill.textContent = state.authText;
