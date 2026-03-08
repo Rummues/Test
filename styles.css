@@ -548,3 +548,22 @@ code {
     width: auto;
   }
 }
+/* --- ESTILOS NUEVOS PARA ACORDES --- */
+.chord-token {
+  color: #1DB954; /* Verde Spotify */
+  font-weight: 900;
+  text-shadow: 0 0 8px rgba(29, 185, 84, 0.4);
+  transition: color 0.2s ease;
+}
+
+#chords-view::-webkit-scrollbar {
+  width: 8px;
+}
+#chords-view::-webkit-scrollbar-track {
+  background: rgba(0,0,0,0.2);
+  border-radius: 10px;
+}
+#chords-view::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.2);
+  border-radius: 10px;
+}
