@@ -1,4 +1,4 @@
-const STORAGE_KEYS = { settings: "spotify-chords.settings.ia2", tokens: "spotify-chords.tokens.ia2" };
+const STORAGE_KEYS = { settings: "spotify-chords.settings.ia3", tokens: "spotify-chords.tokens.ia3" };
 const SPOTIFY_SCOPES = ["user-read-currently-playing", "user-read-playback-state"];
 const NOTES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
 
@@ -122,7 +122,7 @@ async function fetchSpotifyPlayback() {
 }
 
 // ----------------------------------------------------
-// CEREBRO DE IA MEJORADO A PRUEBA DE FALLOS
+// CEREBRO MULTI-MODELO (Auto-Rescate)
 // ----------------------------------------------------
 async function generarAcordesConIA(track) {
   if (!state.settings.geminiKey) {
@@ -133,7 +133,7 @@ async function generarAcordesConIA(track) {
 
   const tituloLimpio = track.name.replace(/\(([^)]*(live|remaster|version|edit)[^)]*)\)/gi, "").trim();
   el.controlsBar.style.display = 'none'; 
-  el.chordsView.innerHTML = `Analizando "${tituloLimpio}" con Inteligencia Artificial...\n(Si hay un error, te mostraré exactamente cuál es). 🤖🎸`;
+  el.chordsView.innerHTML = `Analizando "${tituloLimpio}" con IA...\nBuscando el mejor modelo disponible... 🤖🎸`;
 
   const prompt = `Escribe una guía de acordes para la canción "${tituloLimpio}" del artista "${track.artist}".
   Reglas estrictas:
@@ -141,34 +141,49 @@ async function generarAcordesConIA(track) {
   2. No uses bloques de código (no uses \`\`\`), solo texto plano.
   3. No incluyas saludos ni explicaciones. Solo la tablatura.`;
 
-  try {
-    const response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${state.settings.geminiKey}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts: [{ text: prompt }] }],
-        // Apagamos los filtros de seguridad para evitar bloqueos por letras de canciones
-        safetySettings: [
-          { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
-          { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
-          { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
-          { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
-        ]
-      })
-    });
+  // LISTA DE MODELOS A PROBAR (Del más nuevo al más clásico)
+  const modelosPrueba = ["gemini-2.0-flash", "gemini-1.5-pro", "gemini-pro"];
+  let response = null;
+  let errorData = null;
+  let modeloGanador = "";
 
-    if (!response.ok) {
-      // Capturamos el error REAL de los servidores de Google
-      const errorData = await response.json();
-      throw new Error(errorData.error?.message || "Error desconocido de la API.");
+  for (const modelo of modelosPrueba) {
+    try {
+      response = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${modelo}:generateContent?key=${state.settings.geminiKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          safetySettings: [
+            { category: "HARM_CATEGORY_HARASSMENT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_HATE_SPEECH", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_SEXUALLY_EXPLICIT", threshold: "BLOCK_NONE" },
+            { category: "HARM_CATEGORY_DANGEROUS_CONTENT", threshold: "BLOCK_NONE" }
+          ]
+        })
+      });
+
+      if (response.ok) {
+        modeloGanador = modelo;
+        break; // ¡Encontramos un modelo que funciona! Salimos del bucle.
+      } else {
+        errorData = await response.json();
+        // Si el error NO es 404 (Not Found), es porque la API Key está mala, rompemos el bucle.
+        if (response.status !== 404) break; 
+      }
+    } catch (e) {
+      errorData = { error: { message: e.message } };
+    }
+  }
+
+  try {
+    if (!response || !response.ok) {
+      throw new Error(errorData?.error?.message || "Todos los modelos fallaron o la API Key es inválida.");
     }
 
     const data = await response.json();
-
-    // Verificamos si la IA decidió bloquear la canción por algún motivo extraño
     if (!data.candidates || data.candidates.length === 0 || !data.candidates[0].content) {
-      const razon = data.promptFeedback?.blockReason || data.candidates?.[0]?.finishReason || "Filtro desconocido";
-      throw new Error(`La IA bloqueó la respuesta. Motivo interno: ${razon}`);
+      throw new Error(`La IA bloqueó la respuesta por derechos de autor o contenido.`);
     }
 
     let textoIA = data.candidates[0].content.parts[0].text;
@@ -178,12 +193,12 @@ async function generarAcordesConIA(track) {
     el.transposeLabel.innerText = "Tono: 0";
     state.textoOriginalAcordes = textoIA;
     
-    el.chordsView.innerHTML = procesarTextoAcordes(textoIA);
-    el.controlsBar.style.display = 'flex'; // Activamos la barra de transposición
+    // Mostramos el éxito y el texto
+    el.chordsView.innerHTML = `<span style="color: #1DB954; font-size: 11px;">Generado por: ${modeloGanador}</span><br><br>` + procesarTextoAcordes(textoIA);
+    el.controlsBar.style.display = 'flex'; // ¡Activamos la barra de transposición!
 
   } catch (error) {
-    // AHORA SÍ: Imprimimos el error exacto para no adivinar
-    el.chordsView.innerHTML = `❌ Falló la generación de acordes.\n\nMotivo exacto del sistema:\n${error.message}\n\nAsegúrate de haber guardado bien la API Key.`;
+    el.chordsView.innerHTML = `❌ Falló la generación de acordes.\n\nMotivo del sistema:\n${error.message}\n\nAsegúrate de haber guardado bien tu nueva API Key.`;
   }
 }
 
@@ -213,7 +228,8 @@ function aplicarTransposicion(pasos) {
   el.transposeLabel.innerText = `Tono: ${state.currentTranspose > 0 ? '+' : ''}${state.currentTranspose}`;
   
   const textoPintado = procesarTextoAcordes(state.textoOriginalAcordes);
-  el.chordsView.innerHTML = textoPintado; 
+  // Mantenemos la etiqueta del modelo ganador arriba
+  el.chordsView.innerHTML = el.chordsView.innerHTML.split('<br><br>')[0] + '<br><br>' + textoPintado; 
   
   const spans = el.chordsView.querySelectorAll('.chord-token');
   spans.forEach(span => {
