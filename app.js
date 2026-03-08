@@ -10,7 +10,7 @@ const STORAGE_KEYS = {
 const SPOTIFY_SCOPES = ["user-read-currently-playing", "user-read-playback-state"];
 
 const state = {
-  settings: { clientId: "" },
+  settings: { clientId: "", redirectUri: "" },
   tokens: null,
   currentTrack: null,
   authTone: "muted",   authText: "Sin conectar",
@@ -71,6 +71,10 @@ function bindEvents() {
     saveSettings();
   });
 
+  el.redirectUri.addEventListener("input", () => {
+    state.settings.redirectUri = el.redirectUri.value.trim();
+    saveSettings();
+  });
   el.copyUrlBtn.addEventListener("click", copyRedirectUri);
   el.connectBtn.addEventListener("click", startSpotifyLogin);
   el.disconnectBtn.addEventListener("click", disconnectSpotify);
@@ -82,6 +86,7 @@ function hydrateState() {
     const s = JSON.parse(localStorage.getItem(STORAGE_KEYS.settings) || "null");
     if (s) {
       if (typeof s.clientId === "string") state.settings.clientId = s.clientId;
+      if (typeof s.redirectUri === "string") state.settings.redirectUri = s.redirectUri;
     }
   } catch (_) {}
   try {
@@ -687,7 +692,7 @@ function renderAll() {
 
 function renderSetup() {
   el.spotifyClientId.value = state.settings.clientId;
-  el.redirectUri.value     = getRedirectUri();
+  el.redirectUri.value     = getRedirectUri() || state.settings.redirectUri;
   el.authStatusPill.className   = `status-pill ${pillClassForTone(state.authTone)}`;
   el.authStatusPill.textContent = state.authText;
   el.authHelper.textContent = getRedirectUri()
@@ -931,10 +936,17 @@ function resetChords(tone = "muted", text = "Esperando") {
 }
 
 function getRedirectUri() {
+  // Auto-detect from current URL (works when hosted on HTTPS)
   if (window.location.protocol === "https:" || window.location.protocol === "http:") {
-    return `${window.location.origin}${window.location.pathname}`;
+    const auto = `${window.location.origin}${window.location.pathname}`;
+    // Prefer manually entered value if set and different
+    if (state.settings.redirectUri && state.settings.redirectUri !== auto) {
+      return state.settings.redirectUri;
+    }
+    return auto;
   }
-  return "";
+  // Fallback: use whatever the user typed manually
+  return state.settings.redirectUri || "";
 }
 
 function setAuthStatus(tone, text)     { state.authTone = tone;     state.authText = text; }
