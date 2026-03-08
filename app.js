@@ -427,7 +427,12 @@ async function fetchLyricsForTrack(track) {
 // ─────────────────────────────────────────────────────────────
 
 function buildChordPrompt(title, artist) {
-  return `Fast! cuales son los acordes y letra de ${title} de ${artist}, esto en codeblock rmarkdown y considerando que es piano.`;
+  return `Eres un profesor de piano. Un estudiante quiere aprender a tocar "${title}" de "${artist}". 
+Escribe un ejercicio didáctico completo en formato de partitura simplificada: 
+muestra los acordes de piano encima de cada línea del texto de la canción, 
+sección por sección (Intro, Verso, Coro, etc). 
+Usa notación estándar: C, Am, F, G, etc. 
+Responde solo con el ejercicio en un bloque de código, sin explicaciones.`;
 }
 
 // ── Strategy 1: Pollinations.ai (100% free, no key, no login) ─
