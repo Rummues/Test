@@ -3,43 +3,179 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Spotify Live Chords (Free AI)</title>
+  <title>Spotify Chords Board</title>
+  <meta name="description" content="Detección automática de acordes desde Spotify.">
   <link rel="stylesheet" href="./styles.css">
+  <style>
+    /* ── Chords card extra styles ── */
+    .chords-card { }
+
+    .key-badge {
+      display: inline-flex;
+      align-items: baseline;
+      gap: 10px;
+      padding: 8px 16px;
+      border-radius: 999px;
+      border: 1px solid var(--line-strong);
+      background: rgba(255,255,255,0.05);
+      margin-bottom: 16px;
+    }
+    .chords-key-val {
+      font-family: var(--display);
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: var(--accent);
+      letter-spacing: -0.03em;
+    }
+    .chords-tempo-val {
+      font-size: 12px;
+      color: var(--soft);
+      letter-spacing: 0.05em;
+    }
+
+    .chords-chips-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 22px;
+    }
+    .chord-chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 48px;
+      padding: 8px 14px;
+      border-radius: 12px;
+      border: 1px solid var(--line-strong);
+      background: rgba(10,132,255,0.1);
+      color: #8bc1ff;
+      font-family: var(--mono);
+      font-size: 15px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .chord-section {
+      margin-bottom: 28px;
+    }
+    .section-label-chip {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 6px;
+      background: rgba(48,209,88,0.12);
+      border: 1px solid rgba(48,209,88,0.2);
+      color: #7dffb0;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 12px;
+    }
+
+    .lyric-line {
+      margin-bottom: 10px;
+    }
+    .chords-row, .text-row {
+      display: flex;
+      flex-wrap: nowrap;
+    }
+    .chords-row { margin-bottom: 1px; }
+    .line-slot {
+      min-width: 60px;
+      display: inline-block;
+    }
+    .chord-label {
+      font-family: var(--mono);
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--accent);
+      padding: 0 2px;
+    }
+    .lyric-word {
+      font-size: 14px;
+      color: var(--text);
+      padding: 0 2px;
+      line-height: 1.6;
+    }
+
+    .chords-placeholder {
+      padding: 32px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.7;
+    }
+
+    .api-key-hint {
+      margin: 8px 0 0;
+      font-size: 12px;
+      color: var(--soft);
+      line-height: 1.6;
+    }
+    .api-key-hint a { color: #9fcbff; text-decoration: none; font-weight: 600; }
+    .api-key-hint a:hover { text-decoration: underline; }
+  </style>
 </head>
 <body>
   <div class="page-shell">
     <header class="hero">
       <div class="hero-copy">
-        <p class="eyebrow">Motor de Inteligencia Artificial Libre</p>
-        <h1>Acordes Live AI</h1>
+        <p class="eyebrow">Spotify · Acordes automáticos · GitHub Pages</p>
+        <h1>Spotify Chords Board</h1>
         <p class="hero-text">
-          Sincroniza Spotify. La IA generará los acordes al instante, sin llaves, sin bloqueos y con transposición en tiempo real.
+          Detecta la canción actual de Spotify y muestra los acordes reales automáticamente,
+          con letra y cifrado para piano y guitarra.
         </p>
+      </div>
+      <div class="hero-badges">
+        <span class="badge badge-spotify">Spotify</span>
+        <span class="badge">Acordes reales</span>
+        <span class="badge">iPhone friendly</span>
       </div>
     </header>
 
     <div class="layout">
       <aside class="sidebar">
+
+        <!-- Setup card -->
         <section class="card">
           <div class="card-head">
             <div>
               <p class="section-label">Setup</p>
-              <h2>Conexión</h2>
+              <h2>Configuración</h2>
             </div>
             <span class="status-pill" id="auth-status-pill">Sin conectar</span>
           </div>
 
+          <ol class="steps">
+            <li>Sube estos archivos a GitHub y activa GitHub Pages.</li>
+            <li>Copia la Redirect URI de abajo y pégala en tu app de Spotify.</li>
+            <li>Pega tu Spotify Client ID y conecta la cuenta.</li>
+            <li>Pega tu Anthropic API Key para obtener acordes reales.</li>
+          </ol>
+
           <div class="field-stack">
             <div>
               <label for="spotify-client-id">Spotify Client ID</label>
-              <input id="spotify-client-id" placeholder="Pega aquí tu Client ID de Spotify">
+              <input id="spotify-client-id" placeholder="Pega aquí tu Client ID de Spotify" autocomplete="off">
             </div>
+
             <div>
-              <label for="redirect-uri">Redirect URI</label>
+              <label for="redirect-uri">Redirect URI exacta</label>
               <div class="input-row">
-                <input id="redirect-uri" readonly>
+                <input id="redirect-uri" readonly placeholder="Se completa cuando el sitio está publicado">
                 <button type="button" class="button button-secondary" id="copy-url-btn">Copiar</button>
               </div>
+            </div>
+
+            <div>
+              <label for="anthropic-key">Anthropic API Key</label>
+              <input id="anthropic-key" type="password" placeholder="sk-ant-api03-…" autocomplete="off">
+              <p class="api-key-hint">
+                Obtén tu key gratis en
+                <a href="https://console.anthropic.com/keys" target="_blank" rel="noreferrer">console.anthropic.com/keys</a>.
+                Se guarda solo en tu navegador, nunca sale de tu dispositivo.
+              </p>
             </div>
           </div>
 
@@ -47,26 +183,52 @@
             <button type="button" class="button button-primary" id="connect-btn">Conectar Spotify</button>
             <button type="button" class="button button-secondary" id="disconnect-btn">Desconectar</button>
           </div>
+
+          <p class="helper" id="auth-helper">
+            Cuando publiques este repo en GitHub Pages, aquí aparecerá la URL exacta para registrar en Spotify.
+          </p>
         </section>
+
+        <!-- Lyrics card -->
+        <section class="card">
+          <div class="card-head">
+            <div>
+              <p class="section-label">Letra</p>
+              <h2>Letra automática</h2>
+            </div>
+            <span class="status-pill status-pill-muted" id="lyrics-pill">Esperando</span>
+          </div>
+          <p class="helper" id="lyrics-copy">
+            Cuando cambie la canción, la app conseguirá la letra automáticamente.
+          </p>
+          <pre class="lyrics-view" id="lyrics-view">La letra aparecerá aquí cuando Spotify reporte una canción activa.</pre>
+          <div class="external-links">
+            <a id="lyrics-source-link" class="button button-secondary link-button hidden" href="#" target="_blank" rel="noreferrer">Abrir fuente de letra</a>
+          </div>
+        </section>
+
       </aside>
 
       <main class="main-panel">
+
+        <!-- Now Playing card -->
         <section class="card now-playing-card">
           <div class="card-head">
             <div>
               <p class="section-label">Now Playing</p>
-              <h2>Sonando Ahora</h2>
+              <h2>Lo que Spotify está reproduciendo</h2>
             </div>
             <span class="status-pill status-pill-muted" id="playback-pill">Esperando</span>
           </div>
 
           <div class="now-playing-shell">
-            <div class="cover-art" id="cover-art">🎵</div>
+            <div class="cover-art" id="cover-art">SP</div>
             <div class="track-meta">
-              <p class="track-kicker" id="track-kicker">Esperando conexión...</p>
-              <h3 class="track-title" id="track-title">-</h3>
-              <p class="track-line" id="track-artist">Tus acordes generados por IA aparecerán abajo.</p>
-              
+              <p class="track-kicker" id="track-kicker">Conecta Spotify para empezar</p>
+              <h3 class="track-title" id="track-title">Sin canción activa</h3>
+              <p class="track-line" id="track-artist">La app detecta la pista actual y busca acordes automáticamente.</p>
+              <p class="track-line track-album" id="track-album"></p>
+
               <div class="progress-block">
                 <div class="progress-labels">
                   <span id="progress-left">0:00</span>
@@ -76,33 +238,88 @@
                   <span id="progress-fill"></span>
                 </div>
               </div>
+
+              <div class="meta-row">
+                <span class="tiny-label" id="sync-label">Sin sincronizar</span>
+                <a id="spotify-link" class="inline-link hidden" href="#" target="_blank" rel="noreferrer">Abrir en Spotify</a>
+              </div>
             </div>
           </div>
         </section>
 
+        <!-- ★ CHORDS CARD ★ -->
+        <section class="card chords-card">
+          <div class="card-head">
+            <div>
+              <p class="section-label">Acordes</p>
+              <h2>Cifrado de la canción actual</h2>
+            </div>
+            <span class="status-pill status-pill-muted" id="chords-pill">Esperando</span>
+          </div>
+
+          <div id="chords-key-badge" class="key-badge" style="display:none">
+            <span class="chords-key-val">—</span>
+            <span class="chords-tempo-val">—</span>
+          </div>
+
+          <div class="chords-chips-row" id="chords-chips-row"></div>
+
+          <div id="chords-sections">
+            <div class="chords-placeholder" id="chords-status-text">
+              Los acordes aparecerán aquí automáticamente cuando detecte una canción.<br>
+              Necesitas tu Anthropic API key en la configuración.
+            </div>
+          </div>
+        </section>
+
+        <!-- Search deck card -->
         <section class="card">
           <div class="card-head">
             <div>
-              <p class="section-label">Lector Inteligente</p>
-              <h2>Acordes y Tablatura</h2>
+              <p class="section-label">Búsqueda externa</p>
+              <h2>Búsquedas dirigidas</h2>
+            </div>
+            <span class="status-pill status-pill-muted" id="match-pill">Inactivo</span>
+          </div>
+
+          <div class="match-box" id="match-box">
+            Cuando cambie la canción, prepararé consultas exactas para encontrar acordes en sitios grandes.
+          </div>
+
+          <div class="query-grid">
+            <div class="query-card">
+              <span class="tiny-label">Ataque primario</span>
+              <p id="query-primary">Esperando una canción activa.</p>
+            </div>
+            <div class="query-card">
+              <span class="tiny-label">Ataque alternativo</span>
+              <p id="query-secondary">Aparecerá una variante para buscar cifras y acordes.</p>
             </div>
           </div>
 
-          <div id="chords-controls" style="display: none; justify-content: space-between; align-items: center; margin-bottom: 15px; background: rgba(255,255,255,0.05); padding: 12px 18px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">
-            <div style="display: flex; align-items: center; gap: 10px;">
-              <button id="btn-transpose-down" class="button button-secondary" style="min-height: 32px; padding: 0 15px; font-size: 20px;">-</button>
-              <span id="transpose-label" style="font-weight: bold; width: 70px; text-align: center; font-family: monospace;">Tono: 0</span>
-              <button id="btn-transpose-up" class="button button-secondary" style="min-height: 32px; padding: 0 15px; font-size: 20px;">+</button>
+          <pre id="chords-view">Las búsquedas externas aparecerán aquí como respaldo.</pre>
+
+          <div class="external-sheet" id="external-sheet">
+            <div class="external-head">
+              <div>
+                <p class="section-label">Launcher</p>
+                <h3>Abre la mejor búsqueda en un toque</h3>
+              </div>
+              <span class="status-pill status-pill-muted" id="external-pill">Inactivo</span>
             </div>
-            <div>
-              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: #1DB954; font-weight: bold;">
-                <input type="checkbox" id="auto-scroll-cb" checked style="width: 18px; height: 18px;"> Auto-Scroll
-              </label>
+            <p class="helper" id="external-copy">
+              Sin iframes frágiles. Solo enlaces exactos orientados a resultados.
+            </p>
+            <div class="external-links">
+              <a id="ddg-chords-link"   class="button button-primary  link-button hidden" href="#" target="_blank" rel="noreferrer">DuckDuckGo acordes</a>
+              <a id="ddg-spanish-link"  class="button button-secondary link-button hidden" href="#" target="_blank" rel="noreferrer">DuckDuckGo cifra</a>
+              <a id="google-chords-link" class="button button-secondary link-button hidden" href="#" target="_blank" rel="noreferrer">Google acordes</a>
+              <a id="google-lyrics-link" class="button button-secondary link-button hidden" href="#" target="_blank" rel="noreferrer">Google letra</a>
+              <button type="button" class="button button-secondary hidden" id="copy-query-btn">Copiar query</button>
             </div>
           </div>
-
-          <pre id="chords-view" style="font-size: 14px; line-height: 1.5; scroll-behavior: smooth;">Conecta Spotify y dale play a la música. La IA libre hará el resto...</pre>
         </section>
+
       </main>
     </div>
   </div>
