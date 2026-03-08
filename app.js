@@ -116,10 +116,24 @@ async function copyRedirectUri() {
 }
 
 async function startSpotifyLogin() {
-  const clientId = state.settings.clientId.trim();
-  const redirectUri = getRedirectUri();
-  if (!clientId) { setAuthStatus("error", "Falta el Client ID de Spotify."); renderSetup(); return; }
-  if (!redirectUri) { setAuthStatus("warn", "Necesitas abrir esta app desde una URL HTTPS publicada."); renderSetup(); return; }
+  // Read directly from DOM — avoids stale state if user pasted without triggering input event
+  const clientId = (el.spotifyClientId.value || state.settings.clientId || "").trim();
+  const manualUri = (el.redirectUri.value || state.settings.redirectUri || "").trim();
+
+  // Persist whatever is in the fields right now
+  if (clientId) { state.settings.clientId = clientId; saveSettings(); }
+  if (manualUri) { state.settings.redirectUri = manualUri; saveSettings(); }
+
+  const redirectUri = manualUri || getRedirectUri();
+
+  if (!clientId) {
+    alert("⚠️ Falta el Client ID de Spotify. Pégalo en el campo antes de conectar.");
+    return;
+  }
+  if (!redirectUri) {
+    alert("⚠️ Falta la Redirect URI. Escríbela manualmente en el campo (ej: https://tu-usuario.github.io/tu-repo/).");
+    return;
+  }
 
   const verifier = randomString(96);
   const challenge = await pkceChallengeFromVerifier(verifier);
