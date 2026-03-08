@@ -481,6 +481,9 @@ async function fetchChordsViaCifraclub(title, artist) {
   if (!songUrl) {
     const toSlug = s => s.toLowerCase()
       .normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+      // Remove feat., ft., with ..., (xxx) suffixes before slugifying
+      .replace(/\s*[\(\[](feat|ft|with|prod|x)[^)\]]*[\)\]]/gi, "")
+      .replace(/\s*(feat|ft)\.?\s+.*/gi, "")
       .replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
     songUrl = `https://www.cifraclub.com/${toSlug(artist)}/${toSlug(title)}/`;
     console.log("[Cifraclub] using slug fallback:", songUrl);
@@ -652,9 +655,9 @@ async function fetchChordsViaEChords(title, artist) {
   const searchHtml = await fetchHtmlViaWorker(`https://www.e-chords.com/search-all/${q}`);
   if (!searchHtml) throw new Error("E-Chords: sin respuesta");
 
-  // e-chords search results have links like /chords/artist/song or /tabs/artist/song
+  // e-chords search results — try multiple patterns
   const linkMatch = searchHtml.match(/href="(https?:\/\/www\.e-chords\.com\/(?:chords|tabs)\/[^"]+)"/i)
-                 || searchHtml.match(/href="(\/(?:chords|tabs)\/[^"]+)"/i);
+                 || searchHtml.match(/href="(\/(?:chords|tabs)\/[^"? ]+)"/i);
   console.log("[E-Chords] link found:", linkMatch?.[1]);
   if (!linkMatch) throw new Error("E-Chords: canción no encontrada");
 
