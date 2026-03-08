@@ -10,7 +10,7 @@ const STORAGE_KEYS = {
 const SPOTIFY_SCOPES = ["user-read-currently-playing", "user-read-playback-state"];
 
 const state = {
-  settings: { clientId: "", groqKey: "" },
+  settings: { clientId: "" },
   tokens: null,
   currentTrack: null,
   authTone: "muted",   authText: "Sin conectar",
@@ -43,7 +43,7 @@ async function boot() {
 // ─── DOM Cache ────────────────────────────────────────────────
 function cacheElements() {
   const ids = [
-    "spotify-client-id", "groq-key", "redirect-uri",
+    "spotify-client-id", "redirect-uri",
     "copy-url-btn", "connect-btn", "disconnect-btn",
     "auth-status-pill", "auth-helper",
     "playback-pill", "cover-art",
@@ -70,10 +70,7 @@ function bindEvents() {
     state.settings.clientId = el.spotifyClientId.value.trim();
     saveSettings();
   });
-  el.groqKey.addEventListener("input", () => {
-    state.settings.groqKey = el.groqKey.value.trim();
-    saveSettings();
-  });
+
   el.copyUrlBtn.addEventListener("click", copyRedirectUri);
   el.connectBtn.addEventListener("click", startSpotifyLogin);
   el.disconnectBtn.addEventListener("click", disconnectSpotify);
@@ -85,7 +82,6 @@ function hydrateState() {
     const s = JSON.parse(localStorage.getItem(STORAGE_KEYS.settings) || "null");
     if (s) {
       if (typeof s.clientId === "string") state.settings.clientId = s.clientId;
-      if (typeof s.groqKey === "string") state.settings.groqKey = s.groqKey;
     }
   } catch (_) {}
   try {
@@ -418,39 +414,23 @@ function buildChordPrompt(title, artist) {
   return `Fast! cuales son los acordes y letra de ${title} de ${artist}, esto en codeblock rmarkdown y considerando que es piano.`;
 }
 
-// ── Strategy 1: Groq (free LLM, no CC needed) ────────────────
-async function fetchChordsViaGroq(title, artist, groqKey) {
-  const res = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${groqKey}`
-    },
-    body: JSON.stringify({
-      model: "llama-3.1-8b-instant",
-      temperature: 0.3,
-      max_tokens: 2000,
-      messages: [
-        { role: "system", content: "Eres un experto en música. Responde siempre con un codeblock markdown que contenga la letra y acordes de piano de la canción solicitada. Formato: acordes encima de la letra, sección por sección." },
-        { role: "user",   content: buildChordPrompt(title, artist) }
-      ]
-    })
-  }, 10000);
+// ── Strategy 1: Grok via Puter.js (100% free, no key needed) ─
+async function fetchChordsViaGrok(title, artist) {
+  if (typeof puter === "undefined") throw new Error("Puter.js no cargó");
 
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `Groq HTTP ${res.status}`);
-  }
-  const data = await res.json();
-  const raw  = data?.choices?.[0]?.message?.content || "";
-  if (!raw) throw new Error("Groq: respuesta vacía");
+  const response = await puter.ai.chat(
+    buildChordPrompt(title, artist),
+    { model: "x-ai/grok-4-1-fast" }
+  );
 
-  // Extract content inside ```...``` or return raw if no fences found
-  const fenceMatch = raw.match(/```(?:markdown|text|rmarkdown)?\s*([\s\S]*?)```/);
+  const raw = response?.message?.content || response?.content || "";
+  if (!raw) throw new Error("Grok: respuesta vacía");
+
+  // Extract content inside ``` ``` fences, or use raw text
+  const fenceMatch = raw.match(/```(?:markdown|text|rmarkdown|md)?\s*([\s\S]*?)```/);
   const text = fenceMatch ? fenceMatch[1].trim() : raw.trim();
-  if (!text) throw new Error("Groq: contenido vacío");
+  if (!text) throw new Error("Grok: contenido vacío");
 
-  // Return as a plain-text chord sheet object
   return { type: "text", content: text };
 }
 
@@ -612,8 +592,6 @@ function guessKey(chords) {
 async function fetchChordsForTrack(track, trackKey) {
   const title   = cleanTrackLookupText(track.name);
   const artist  = track.artists[0] || "";
-  const groqKey = state.settings.groqKey.trim();
-
   state.chordsTone = "warn";
   state.chordsText = "Buscando…";
   state.chordsData = null;
@@ -623,18 +601,16 @@ async function fetchChordsForTrack(track, trackKey) {
   let chordData = null;
   const log = [];
 
-  // 1 · Groq (instant, free, requires key)
-  if (groqKey) {
-    try {
-      if (el.chordsStatusText) el.chordsStatusText.textContent = "Groq: buscando acordes…";
-      chordData = await fetchChordsViaGroq(title, artist, groqKey);
-      log.push("✓ Groq");
-    } catch (e) { log.push(`✗ Groq: ${e.message}`); }
-  }
+  // 1 · Grok via Puter.js (100% free, no key, no registration)
+  try {
+    if (el.chordsStatusText) el.chordsStatusText.textContent = "Grok: buscando acordes…";
+    chordData = await fetchChordsViaGrok(title, artist);
+    log.push("✓ Grok");
+  } catch (e) { log.push(`✗ Grok: ${e.message}`); }
 
   if (trackKey !== state.lastTrackKey) return;
 
-  // 2 · Chordie scrape (no key needed)
+  // 2 · Chordie scrape (fallback)
   if (!chordData) {
     try {
       if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando en Chordie…";
@@ -646,7 +622,7 @@ async function fetchChordsForTrack(track, trackKey) {
 
   if (trackKey !== state.lastTrackKey) return;
 
-  // 3 · E-Chords scrape
+  // 3 · E-Chords scrape (fallback)
   if (!chordData) {
     try {
       if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando en E-Chords…";
@@ -666,12 +642,10 @@ async function fetchChordsForTrack(track, trackKey) {
     state.chordsTone = "warn";
     state.chordsText = "No encontrados";
     state.chordsData = null;
-    const hint = groqKey
-      ? ""
-      : "💡 Agrega una Groq API key (gratis en console.groq.com) para acordes precisos. ";
     if (el.chordsStatusText) {
       el.chordsStatusText.textContent =
-        hint + "No se encontraron acordes automáticamente — usa los links de búsqueda abajo.\n" +
+        "No se encontraron acordes automáticamente — usa los links de búsqueda abajo.
+" +
         log.join(" · ");
     }
   }
@@ -713,7 +687,6 @@ function renderAll() {
 
 function renderSetup() {
   el.spotifyClientId.value = state.settings.clientId;
-  el.groqKey.value       = state.settings.groqKey;
   el.redirectUri.value     = getRedirectUri();
   el.authStatusPill.className   = `status-pill ${pillClassForTone(state.authTone)}`;
   el.authStatusPill.textContent = state.authText;
