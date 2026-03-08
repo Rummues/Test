@@ -414,17 +414,14 @@ async function fetchLyricsForTrack(track) {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  CHORDS  — 3-strategy waterfall, all free, no AI required
+//  CHORDS  — 3-strategy waterfall, all free, no key needed
 //
-//  Strategy 1 · Groq API (FREE, no credit card)
-//    → console.groq.com  — 14 400 req/day, llama-3.1-8b-instant
-//    → Fast: ~1 s response, accurate real chords
+//  Strategy 1 · OpenRouter (free models, no credit card)
+//    → openrouter.ai — free tier: mistralai/mistral-7b-instruct
+//    → Requires a free API key (no CC): openrouter.ai/keys
 //
-//  Strategy 2 · Chordify unofficial embed scrape
-//    → chordify.net/chords/youtube uses public embeds
-//
-//  Strategy 3 · Chordie scrape via allorigins proxy
-//    → chordie.com has no Cloudflare on search results
+//  Strategy 2 · Chordie scrape via allorigins proxy
+//  Strategy 3 · E-Chords scrape via allorigins proxy
 //
 //  If all fail → show search links (already in the UI)
 // ─────────────────────────────────────────────────────────────
@@ -433,24 +430,19 @@ function buildChordPrompt(title, artist) {
   return `Fast! cuales son los acordes y letra de ${title} de ${artist}, esto en codeblock rmarkdown y considerando que es piano.`;
 }
 
-// ── Strategy 1: Grok via Puter.js (100% free, no key needed) ─
-async function fetchChordsViaGrok(title, artist) {
-  if (typeof puter === "undefined") throw new Error("Puter.js no cargó");
-
-  const response = await puter.ai.chat(
-    buildChordPrompt(title, artist),
-    { model: "x-ai/grok-4-1-fast" }
-  );
-
-  const raw = response?.message?.content || response?.content || "";
-  if (!raw) throw new Error("Grok: respuesta vacía");
-
-  // Extract content inside ``` ``` fences, or use raw text
-  const fenceMatch = raw.match(/```(?:markdown|text|rmarkdown|md)?\s*([\s\S]*?)```/);
-  const text = fenceMatch ? fenceMatch[1].trim() : raw.trim();
-  if (!text) throw new Error("Grok: contenido vacío");
-
-  return { type: "text", content: text };
+// ── Strategy 1: Pollinations.ai (100% free, no key, no login) ─
+async function fetchChordsViaPollinations(title, artist) {
+  const prompt = buildChordPrompt(title, artist);
+  const url = "https://text.pollinations.ai/" + encodeURIComponent(prompt);
+  const res = await fetchWithTimeout(url, {
+    headers: { "Accept": "text/plain" }
+  }, 15000);
+  if (!res.ok) throw new Error(`Pollinations HTTP ${res.status}`);
+  const text = (await res.text()).trim();
+  if (!text) throw new Error("Pollinations: respuesta vacía");
+  // Strip fences if present
+  const fenceMatch = text.match(/```(?:markdown|text|rmarkdown|md)?\s*([\s\S]*?)```/s);
+  return { type: "text", content: fenceMatch ? fenceMatch[1].trim() : text };
 }
 
 // ── Strategy 2: Chordie.com scrape ───────────────────────────
@@ -620,12 +612,12 @@ async function fetchChordsForTrack(track, trackKey) {
   let chordData = null;
   const log = [];
 
-  // 1 · Grok via Puter.js (100% free, no key, no registration)
+  // 1 · Pollinations.ai (gratis, sin key, sin login)
   try {
-    if (el.chordsStatusText) el.chordsStatusText.textContent = "Grok: buscando acordes…";
-    chordData = await fetchChordsViaGrok(title, artist);
-    log.push("✓ Grok");
-  } catch (e) { log.push(`✗ Grok: ${e.message}`); }
+    if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando acordes…";
+    chordData = await fetchChordsViaPollinations(title, artist);
+    log.push("✓ Pollinations");
+  } catch (e) { log.push(`✗ Pollinations: ${e.message}`); }
 
   if (trackKey !== state.lastTrackKey) return;
 
@@ -663,9 +655,7 @@ async function fetchChordsForTrack(track, trackKey) {
     state.chordsData = null;
     if (el.chordsStatusText) {
       el.chordsStatusText.textContent =
-        "No se encontraron acordes automáticamente — usa los links de búsqueda abajo.
-" +
-        log.join(" · ");
+        "No se encontraron acordes automáticamente — usa los links de búsqueda abajo. " + log.join(" · ");
     }
   }
 
@@ -705,7 +695,7 @@ function renderAll() {
 }
 
 function renderSetup() {
-  el.spotifyClientId.value = state.settings.clientId;
+  el.spotifyClientId.value  = state.settings.clientId;
   el.redirectUri.value     = getRedirectUri() || state.settings.redirectUri;
   el.authStatusPill.className   = `status-pill ${pillClassForTone(state.authTone)}`;
   el.authStatusPill.textContent = state.authText;
