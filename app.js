@@ -10,7 +10,7 @@ const STORAGE_KEYS = {
 const SPOTIFY_SCOPES = ["user-read-currently-playing", "user-read-playback-state"];
 
 const state = {
-  settings: { clientId: "", redirectUri: "", groqKey: "" },
+  settings: { clientId: "", redirectUri: "", workerUrl: "" },
   tokens: null,
   currentTrack: null,
   authTone: "muted",   authText: "Sin conectar",
@@ -43,7 +43,7 @@ async function boot() {
 // ─── DOM Cache ────────────────────────────────────────────────
 function cacheElements() {
   const ids = [
-    "spotify-client-id", "groq-key", "redirect-uri",
+    "spotify-client-id", "worker-url", "redirect-uri",
     "copy-url-btn", "connect-btn", "disconnect-btn",
     "auth-status-pill", "auth-helper",
     "playback-pill", "cover-art",
@@ -71,8 +71,8 @@ function bindEvents() {
     saveSettings();
   });
 
-  el.groqKey.addEventListener("input", () => {
-    state.settings.groqKey = el.groqKey.value.trim();
+  el.workerUrl.addEventListener("input", () => {
+    state.settings.workerUrl = el.workerUrl.value.trim().replace(/\/+$/, "");
     saveSettings();
   });
   el.redirectUri.addEventListener("input", () => {
@@ -91,7 +91,7 @@ function hydrateState() {
     if (s) {
       if (typeof s.clientId === "string") state.settings.clientId = s.clientId;
       if (typeof s.redirectUri === "string") state.settings.redirectUri = s.redirectUri;
-      if (typeof s.groqKey === "string") state.settings.groqKey = s.groqKey;
+      if (typeof s.workerUrl === "string") state.settings.workerUrl = s.workerUrl;
     }
   } catch (_) {}
   try {
@@ -419,208 +419,143 @@ async function fetchLyricsForTrack(track) {
 }
 
 // ─────────────────────────────────────────────────────────────
-//  CHORDS  — 3-strategy waterfall, all free, no key needed
+//  CHORDS  — scraping via Cloudflare Worker (sin IA, sin tokens)
 //
-//  Strategy 1 · OpenRouter (free models, no credit card)
-//    → openrouter.ai — free tier: mistralai/mistral-7b-instruct
-//    → Requires a free API key (no CC): openrouter.ai/keys
-//
-//  Strategy 2 · Chordie scrape via allorigins proxy
-//  Strategy 3 · E-Chords scrape via allorigins proxy
-//
-//  If all fail → show search links (already in the UI)
+//  Worker actúa como proxy CORS → raspa Cifraclub, E-Chords, Chordie
+//  100% gratis, 100k requests/día, sin límites de tokens
 // ─────────────────────────────────────────────────────────────
 
-function buildChordPrompt(title, artist) {
-  return `Fast! cuales son los acordes y letra de ${title} de ${artist}, esto en codeblock rmarkdown y considerando que es piano.`;
+function proxyUrl(targetUrl) {
+  const base = state.settings.workerUrl.trim();
+  if (!base) throw new Error("Configura la URL del Worker en Setup");
+  return `${base}/?url=${encodeURIComponent(targetUrl)}`;
 }
 
-// ── Strategy 1: Groq API (gratis, sin tarjeta) ───────────────
-async function fetchChordsViaGroq(title, artist) {
-  const key = state.settings.groqKey.trim();
-  if (!key) throw new Error("Sin Groq key");
-
-  const res = await fetchWithTimeout("https://api.groq.com/openai/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${key}`
-    },
-    body: JSON.stringify({
-      model: "llama-3.3-70b-versatile",
-      temperature: 0.3,
-      max_tokens: 2000,
-      messages: [
-        {
-          role: "system",
-          content: "Eres un experto en música y transcripción de canciones. Cuando te pidan acordes y letra, SIEMPRE los proporcionas completos sin negarte. Respondes SOLO con un bloque de código markdown, sin explicaciones adicionales."
-        },
-        {
-          role: "user",
-          content: buildChordPrompt(title, artist)
-        }
-      ]
-    })
-  }, 10000);
-
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || `Groq HTTP ${res.status}`);
-  }
-  const data = await res.json();
-  const raw  = data?.choices?.[0]?.message?.content || "";
-  if (!raw) throw new Error("Groq: respuesta vacía");
-  const fenceMatch = raw.match(/```(?:markdown|text|rmarkdown|md)?\s*([\s\S]*?)```/s);
-  return { type: "text", content: fenceMatch ? fenceMatch[1].trim() : raw.trim() };
-}
-
-// ── Strategy 2: Chordie.com scrape ───────────────────────────
-async function fetchChordsViaChordie(title, artist) {
-  const q   = encodeURIComponent(`${artist} ${title}`);
-  const url = `https://www.chordie.com/results.php?q=${q}&type=chords`;
-  const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
-
-  const res = await fetchWithTimeout(proxy, {}, 6000);
-  if (!res.ok) return null;
-  const { contents } = await res.json();
-  if (!contents) return null;
-
-  // Find first result link
-  const linkMatch = contents.match(/href="(https:\/\/www\.chordie\.com\/chord\.php\?uri=[^"]+)"/);
-  if (!linkMatch) return null;
-
-  const pageProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(linkMatch[1])}`;
-  const pageRes = await fetchWithTimeout(pageProxy, {}, 6000);
-  if (!pageRes.ok) return null;
-  const { contents: html } = await pageRes.json();
-  if (!html) return null;
-
-  return parseChordieHtml(html, title, artist);
-}
-
-function parseChordieHtml(html, title, artist) {
-  // Chordie wraps chords in <span class="chordname"> or [Chord] notation
-  const spanMatches = [...html.matchAll(/<span[^>]*class="chordname"[^>]*>([A-G][#b]?(?:m(?:aj)?|dim|aug|sus|add)?[0-9]?(?:\/[A-G][#b]?)?)<\/span>/gi)];
-  const bracketMatches = [...html.matchAll(/\[([A-G][#b]?(?:m(?:aj)?|dim|aug|sus)?[0-9]?)\]/g)];
-  const allMatches = [...spanMatches, ...bracketMatches].map(m => m[1]);
-
-  if (allMatches.length < 2) return null;
-
-  const uniqueChords = [...new Set(allMatches)].slice(0, 10);
-
-  // Try to get the lyrics/tab text
-  const preMatch = html.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
-  const rawText = preMatch
-    ? preMatch[1]
-        .replace(/<span[^>]*class="chordname"[^>]*>[^<]+<\/span>/gi, c => {
-          const m = c.match(/>([^<]+)</); return m ? `[${m[1]}]` : "";
-        })
-        .replace(/<[^>]+>/g, "")
-        .replace(/&amp;/g, "&").replace(/&nbsp;/g, " ").replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-    : "";
-
-  const lines = rawText.split("\n").map(l => l.trim()).filter(Boolean);
-  return buildChordDataFromLines(lines, uniqueChords, title, artist);
-}
-
-// ── Strategy 3: E-Chords scrape ──────────────────────────────
-async function fetchChordsViaEChords(title, artist) {
+// ── Strategy 1: Cifraclub ─────────────────────────────────────
+async function fetchChordsViaCifraclub(title, artist) {
   const q = encodeURIComponent(`${artist} ${title}`);
-  const searchUrl = `https://www.e-chords.com/search-all/${q}`;
-  const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(searchUrl)}`;
 
-  const res = await fetchWithTimeout(proxy, {}, 6000);
-  if (!res.ok) return null;
-  const { contents } = await res.json();
-  if (!contents) return null;
+  // Search page
+  const searchHtml = await fetchHtmlViaWorker(
+    `https://www.cifraclub.com.br/busca/?q=${q}`
+  );
+  if (!searchHtml) throw new Error("Cifraclub: sin respuesta en búsqueda");
 
-  const linkMatch = contents.match(/href="(https:\/\/www\.e-chords\.com\/(?:chords|tabs)\/[^"]+)"/);
-  if (!linkMatch) return null;
+  // Extract first result URL — cifraclub links look like /artist/song/
+  const linkMatch = searchHtml.match(/href="(\/[a-z0-9\-]+\/[a-z0-9\-]+\/?)"/);
+  if (!linkMatch) throw new Error("Cifraclub: no se encontró la canción");
 
-  const pageProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(linkMatch[1])}`;
-  const pageRes = await fetchWithTimeout(pageProxy, {}, 6000);
-  if (!pageRes.ok) return null;
-  const { contents: html } = await pageRes.json();
-  if (!html) return null;
+  const songUrl = "https://www.cifraclub.com.br" + linkMatch[1];
+  const songHtml = await fetchHtmlViaWorker(songUrl);
+  if (!songHtml) throw new Error("Cifraclub: sin respuesta en página de canción");
 
-  // E-chords puts chords inside <u> tags or [brackets]
-  const matches = [...html.matchAll(/\[([A-G][#b]?(?:m(?:aj)?|dim|aug|sus)?[0-9]?)\]/g)];
-  if (matches.length < 2) return null;
-
-  const uniqueChords = [...new Set(matches.map(m => m[1]))].slice(0, 10);
-  const preMatch = html.match(/<pre[^>]*id="core"[^>]*>([\s\S]*?)<\/pre>/i)
-                || html.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
-  const rawText = preMatch
-    ? preMatch[1].replace(/<[^>]+>/g, "").replace(/&amp;/g,"&").replace(/&nbsp;/g," ")
-    : "";
-  const lines = rawText.split("\n").map(l => l.trim()).filter(Boolean);
-  return buildChordDataFromLines(lines, uniqueChords, title, artist);
+  return parseCifraclubPage(songHtml, title, artist);
 }
 
-// ── Shared parser ─────────────────────────────────────────────
-function buildChordDataFromLines(lines, uniqueChords, title, artist) {
-  // Split into chord lines vs lyric lines
-  // A "chord line" has tokens that are all chord names
-  const isChordToken = t => /^[A-G][#b]?(?:m(?:aj)?|dim|aug|sus|add)?[0-9]?(?:\/[A-G][#b]?)?$/.test(t);
-  const isChordLine  = l => {
-    const tokens = l.trim().split(/\s+/);
-    return tokens.length >= 1 && tokens.length <= 8 && tokens.every(t => isChordToken(t) || t === "|" || t === "-");
-  };
+async function fetchHtmlViaWorker(targetUrl) {
+  try {
+    const res = await fetchWithTimeout(proxyUrl(targetUrl), {}, 8000);
+    if (!res.ok) return null;
+    return res.text();
+  } catch (_) { return null; }
+}
 
-  // Pair chord lines with following lyric lines
-  const sections = [];
-  const sectionNames = ["Intro", "Verso", "Pre-Coro", "Coro", "Puente", "Outro"];
-  let si = 0;
-  let i  = 0;
-  let currentSection = null;
+function parseCifraclubPage(html, title, artist) {
+  // Remove script/style tags
+  const clean = html
+    .replace(/<script[\s\S]*?<\/script>/gi, "")
+    .replace(/<style[\s\S]*?<\/style>/gi, "");
 
-  while (i < lines.length && si < sectionNames.length) {
-    const line = lines[i];
+  // Cifraclub wraps chords in <b> tags and lyrics in plain text inside <pre>
+  // Structure: alternating chord lines and lyric lines inside .cifra_cnt or pre
+  const preMatch = clean.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+  if (!preMatch) return null;
 
-    // Check for section marker
-    if (/^(verse|coro|chorus|bridge|intro|outro|pre.?coro|refr[aá]n)/i.test(line)) {
-      if (currentSection && currentSection.lines.length) sections.push(currentSection);
-      currentSection = { name: sectionNames[si++], lines: [] };
-      i++; continue;
-    }
+  const raw = preMatch[1];
 
-    if (!currentSection) {
-      currentSection = { name: sectionNames[si++], lines: [] };
-    }
+  // Extract chord names from <b> tags
+  const chordPattern = /<b>([A-G][#b]?(?:m(?:aj)?|dim|aug|sus[24]?|add)?(?:[0-9])?(?:\/[A-G][#b]?)?)<\/b>/g;
+  const allChords = [...raw.matchAll(chordPattern)].map(m => m[1]);
+  if (allChords.length < 2) return null;
 
-    if (isChordLine(line)) {
-      const lineChords = line.trim().split(/\s+/).filter(t => isChordToken(t));
-      const paddedChords = lineChords.slice(0, 4);
-      while (paddedChords.length < 4) paddedChords.push("");
-      // Next line is probably lyrics
-      const nextLine = lines[i + 1] && !isChordLine(lines[i + 1]) ? lines[i + 1] : "";
-      currentSection.lines.push({ text: nextLine.slice(0, 60) || "♩", chords: paddedChords });
-      if (nextLine) i++; // skip lyric line we already consumed
-    } else {
-      // Pure lyric line without chords above — add with empty chords
-      if (currentSection.lines.length < 8) {
-        currentSection.lines.push({ text: line.slice(0, 60), chords: uniqueChords.slice(0, 4).concat(["","","",""]).slice(0,4) });
-      }
-    }
-    i++;
-    if (currentSection.lines.length >= 6) {
-      sections.push(currentSection);
-      currentSection = null;
-    }
-  }
-  if (currentSection && currentSection.lines.length) sections.push(currentSection);
+  const uniqueChords = [...new Set(allChords)].slice(0, 12);
 
-  const finalSections = sections.length
-    ? sections
-    : [{ name: "Canción", lines: [{ text: `${title} — ${artist}`, chords: uniqueChords.slice(0,4).concat(["","","",""]).slice(0,4) }] }];
+  // Build the chord sheet: replace <b>CHORD</b> with [CHORD], strip other HTML
+  const sheetRaw = raw
+    .replace(/<b>([^<]+)<\/b>/g, "[$1]")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&amp;/g, "&").replace(/&nbsp;/g, " ")
+    .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
+    .replace(/&#[0-9]+;/g, "");
+
+  // Split into lines and pair chord lines with lyric lines
+  const lines = sheetRaw.split("\n");
+  const sections = buildSectionsFromChordSheet(lines, title, artist);
 
   return {
     key: guessKey(uniqueChords),
     tempo: "—",
     chords: uniqueChords,
-    sections: finalSections,
-    progression: { "Canción": uniqueChords.slice(0,6).join(" - ") }
+    sections,
+    progression: { "Canción": uniqueChords.slice(0, 6).join(" - ") }
   };
+}
+
+function buildSectionsFromChordSheet(lines, title, artist) {
+  const sectionKeywords = /^(intro|vers[oa]|coro|chorus|bridge|puente|outro|refr[aá]n|pr[eé]-?coro|solo|instrumental)/i;
+  const sections = [];
+  let current = { name: "Intro", lines: [] };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+
+    // New section header
+    if (sectionKeywords.test(line) && line.length < 30) {
+      if (current.lines.length) sections.push(current);
+      current = { name: capitalize(line), lines: [] };
+      continue;
+    }
+
+    // Chord line: contains [CHORD] tokens
+    const hasChords = /\[[A-G][#b]?[^\]]*\]/.test(line);
+    if (hasChords) {
+      // Extract chords in order
+      const chords = [...line.matchAll(/\[([^\]]+)\]/g)].map(m => m[1]);
+      // Next non-empty line is the lyric
+      let lyric = "";
+      let j = i + 1;
+      while (j < lines.length && !lines[j].trim()) j++;
+      if (j < lines.length && !/\[[A-G]/.test(lines[j])) {
+        lyric = lines[j].trim();
+        i = j; // skip lyric line
+      }
+      current.lines.push({ text: lyric || "♩", chords: padChords(chords) });
+    } else {
+      // Pure lyric line with no chords above
+      current.lines.push({ text: line, chords: [] });
+    }
+
+    if (current.lines.length >= 8) {
+      sections.push(current);
+      current = { name: `Sección ${sections.length + 1}`, lines: [] };
+    }
+  }
+  if (current.lines.length) sections.push(current);
+
+  return sections.length
+    ? sections
+    : [{ name: "Canción", lines: [{ text: `${title} — ${artist}`, chords: [] }] }];
+}
+
+function padChords(chords) {
+  const out = chords.slice(0, 4);
+  while (out.length < 4) out.push("");
+  return out;
+}
+
+function capitalize(s) {
+  return s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
 }
 
 function guessKey(chords) {
@@ -628,41 +563,66 @@ function guessKey(chords) {
   return first.match(/^[A-G][#b]?m?/)?.[0] || first;
 }
 
+// ── Strategy 2: E-Chords via Worker ──────────────────────────
+async function fetchChordsViaEChords(title, artist) {
+  const q = encodeURIComponent(`${artist} ${title}`);
+  const searchHtml = await fetchHtmlViaWorker(`https://www.e-chords.com/search-all/${q}`);
+  if (!searchHtml) throw new Error("E-Chords: sin respuesta");
+
+  const linkMatch = searchHtml.match(/href="(https:\/\/www\.e-chords\.com\/(?:chords|tabs)\/[^"]+)"/);
+  if (!linkMatch) throw new Error("E-Chords: canción no encontrada");
+
+  const pageHtml = await fetchHtmlViaWorker(linkMatch[1]);
+  if (!pageHtml) throw new Error("E-Chords: sin respuesta en página");
+
+  const matches = [...pageHtml.matchAll(/\[([A-G][#b]?(?:m(?:aj)?|dim|aug|sus)?[0-9]?)\]/g)];
+  if (matches.length < 2) throw new Error("E-Chords: sin acordes");
+
+  const uniqueChords = [...new Set(matches.map(m => m[1]))].slice(0, 10);
+  const preMatch = pageHtml.match(/<pre[^>]*id="core"[^>]*>([\s\S]*?)<\/pre>/i)
+                || pageHtml.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+  const rawText = preMatch
+    ? preMatch[1].replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&nbsp;/g, " ")
+    : "";
+  const lines = rawText.split("\n").map(l => l.trim()).filter(Boolean);
+  return buildSectionsFromChordSheet(lines, title, artist).length
+    ? { key: guessKey(uniqueChords), tempo: "—", chords: uniqueChords, sections: buildSectionsFromChordSheet(lines, title, artist), progression: {} }
+    : null;
+}
+
 // ── Main orchestrator ─────────────────────────────────────────
 async function fetchChordsForTrack(track, trackKey) {
-  const title   = cleanTrackLookupText(track.name);
-  const artist  = track.artists[0] || "";
+  const title  = cleanTrackLookupText(track.name);
+  const artist = track.artists[0] || "";
+
   state.chordsTone = "warn";
   state.chordsText = "Buscando…";
   state.chordsData = null;
   if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando acordes…";
   renderChords();
 
+  if (!state.settings.workerUrl) {
+    state.chordsTone = "warn";
+    state.chordsText = "Sin Worker";
+    if (el.chordsStatusText) el.chordsStatusText.textContent = "⚙️ Configura la URL de tu Cloudflare Worker en Setup para obtener acordes automáticamente.";
+    renderChords();
+    return;
+  }
+
   let chordData = null;
   const log = [];
 
-  // 1 · Groq (gratis, sin tarjeta — console.groq.com)
+  // 1 · Cifraclub (mejor base de datos, especialmente español/latino)
   try {
-    if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando acordes con Groq…";
-    chordData = await fetchChordsViaGroq(title, artist);
-    log.push("✓ Groq");
-  } catch (e) { log.push(`✗ Groq: ${e.message}`); }
+    if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando en Cifraclub…";
+    chordData = await fetchChordsViaCifraclub(title, artist);
+    if (chordData) log.push("✓ Cifraclub");
+    else log.push("✗ Cifraclub: no encontrado");
+  } catch (e) { log.push(`✗ Cifraclub: ${e.message}`); }
 
   if (trackKey !== state.lastTrackKey) return;
 
-  // 2 · Chordie scrape (fallback)
-  if (!chordData) {
-    try {
-      if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando en Chordie…";
-      chordData = await fetchChordsViaChordie(title, artist);
-      if (chordData) log.push("✓ Chordie");
-      else log.push("✗ Chordie: no encontrado");
-    } catch (e) { log.push(`✗ Chordie: ${e.message}`); }
-  }
-
-  if (trackKey !== state.lastTrackKey) return;
-
-  // 3 · E-Chords scrape (fallback)
+  // 2 · E-Chords (fallback, fuerte en pop/rock inglés)
   if (!chordData) {
     try {
       if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando en E-Chords…";
@@ -684,7 +644,7 @@ async function fetchChordsForTrack(track, trackKey) {
     state.chordsData = null;
     if (el.chordsStatusText) {
       el.chordsStatusText.textContent =
-        "No se encontraron acordes automáticamente — usa los links de búsqueda abajo. " + log.join(" · ");
+        "No encontrado automáticamente — usa los links de búsqueda abajo. " + log.join(" · ");
     }
   }
 
@@ -725,7 +685,7 @@ function renderAll() {
 
 function renderSetup() {
   el.spotifyClientId.value  = state.settings.clientId;
-  if (el.groqKey) el.groqKey.value = state.settings.groqKey || "";
+  if (el.workerUrl) el.workerUrl.value = state.settings.workerUrl || "";
   el.redirectUri.value     = getRedirectUri() || state.settings.redirectUri;
   el.authStatusPill.className   = `status-pill ${pillClassForTone(state.authTone)}`;
   el.authStatusPill.textContent = state.authText;
