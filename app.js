@@ -335,6 +335,10 @@ async function fetchSpotifyPlayback() {
 }
 
 async function loadTrackResources(track, trackKey) {
+  // Scroll back to top so user sees the new song from the beginning
+  window.scrollTo({ top: 0, behavior: "smooth" });
+  if (el.chordsSections) el.chordsSections.scrollTop = 0;
+
   // Lyrics
   resetLyrics("warn", "Buscando…", "Buscando letra automáticamente…");
   renderLyrics();
@@ -505,6 +509,48 @@ async function fetchHtmlViaWorker(targetUrl) {
 }
 
 function parseCifraclubPage(html, title, artist) {
+  // ── Try __NEXT_DATA__ first — contains keyboard-specific chord data ──
+  const nextMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+  if (nextMatch) {
+    try {
+      const data = JSON.parse(nextMatch[1]);
+      const pageProps = data?.props?.pageProps || {};
+      console.log("[Cifraclub song] nextData keys:", Object.keys(pageProps));
+
+      // Cifraclub stores instrument versions inside the cifra object
+      const cifra = pageProps.cifra || pageProps.song || pageProps.data?.cifra;
+      if (cifra) {
+        console.log("[Cifraclub song] cifra keys:", Object.keys(cifra));
+
+        // Try to get keyboard-specific content
+        const instruments = cifra.instruments || cifra.versions || cifra.cifras;
+        if (Array.isArray(instruments)) {
+          const keyboard = instruments.find(i =>
+            (i.instrument || i.name || "").toLowerCase().includes("teclado") ||
+            (i.instrument || i.name || "").toLowerCase().includes("keyboard") ||
+            (i.instrument || i.name || "").toLowerCase().includes("piano")
+          );
+          const target = keyboard || instruments[0];
+          if (target?.content || target?.text || target?.body) {
+            const text = target.content || target.text || target.body;
+            console.log("[Cifraclub song] got keyboard content from JSON, length:", text.length);
+            return { type: "text", content: text.trim() };
+          }
+        }
+
+        // Sometimes chord content is directly on the cifra object
+        if (cifra.content || cifra.text) {
+          const text = cifra.content || cifra.text;
+          console.log("[Cifraclub song] got content from cifra object, length:", text.length);
+          return { type: "text", content: text.trim() };
+        }
+      }
+    } catch (e) {
+      console.error("[Cifraclub song] JSON parse error:", e.message);
+    }
+  }
+
+  // ── Fallback: parse the <pre> tag (guitar chords, but better than nothing) ──
   const clean = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "");
@@ -527,17 +573,14 @@ function parseCifraclubPage(html, title, artist) {
     return null;
   }
 
-  // Convert to plain text chord sheet preserving spacing
-  // <b>Am</b> → Am, keeping original spaces for alignment
   const sheetText = raw
-    .replace(/<b>([^<]+)<\/b>/g, "$1")   // unwrap chords, keep text
-    .replace(/<[^>]+>/g, "")             // strip remaining tags
+    .replace(/<b>([^<]+)<\/b>/g, "$1")
+    .replace(/<[^>]+>/g, "")
     .replace(/&amp;/g, "&").replace(/&nbsp;/g, " ")
     .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
     .replace(/&#[0-9]+;/g, "")
     .trim();
 
-  // Return as plain text — rendered in <pre> with monospace font
   return { type: "text", content: sheetText };
 }
 
