@@ -474,7 +474,7 @@ async function fetchChordsViaCifraclub(title, artist) {
     console.log("[Cifraclub] using slug fallback:", songUrl);
   }
 
-  const songHtml = await fetchHtmlViaWorker(songUrl);
+  const songHtml = await fetchHtmlViaWorker(songUrl + "?instrument=keyboard");
   if (!songHtml || songHtml.length < 1000) throw new Error("Cifraclub: página de canción vacía");
 
   return parseCifraclubPage(songHtml, title, artist);
@@ -497,7 +497,6 @@ async function fetchHtmlViaWorker(targetUrl) {
 }
 
 function parseCifraclubPage(html, title, artist) {
-  // Remove script/style tags
   const clean = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "");
@@ -512,7 +511,6 @@ function parseCifraclubPage(html, title, artist) {
   const raw = preMatch[1];
   console.log("[Cifraclub] pre content length:", raw.length, "sample:", raw.slice(0, 200));
 
-  // Extract chord names from <b> tags
   const chordPattern = /<b>([A-G][#b]?(?:m(?:aj)?|dim|aug|sus[24]?|add)?(?:[0-9])?(?:\/[A-G][#b]?)?)<\/b>/g;
   const allChords = [...raw.matchAll(chordPattern)].map(m => m[1]);
   console.log("[Cifraclub] chords found:", allChords.length, allChords.slice(0, 10));
@@ -521,27 +519,18 @@ function parseCifraclubPage(html, title, artist) {
     return null;
   }
 
-  const uniqueChords = [...new Set(allChords)].slice(0, 12);
-
-  // Build the chord sheet: replace <b>CHORD</b> with [CHORD], strip other HTML
-  const sheetRaw = raw
-    .replace(/<b>([^<]+)<\/b>/g, "[$1]")
-    .replace(/<[^>]+>/g, "")
+  // Convert to plain text chord sheet preserving spacing
+  // <b>Am</b> → Am, keeping original spaces for alignment
+  const sheetText = raw
+    .replace(/<b>([^<]+)<\/b>/g, "$1")   // unwrap chords, keep text
+    .replace(/<[^>]+>/g, "")             // strip remaining tags
     .replace(/&amp;/g, "&").replace(/&nbsp;/g, " ")
     .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
-    .replace(/&#[0-9]+;/g, "");
+    .replace(/&#[0-9]+;/g, "")
+    .trim();
 
-  // Split into lines and pair chord lines with lyric lines
-  const lines = sheetRaw.split("\n");
-  const sections = buildSectionsFromChordSheet(lines, title, artist);
-
-  return {
-    key: guessKey(uniqueChords),
-    tempo: "—",
-    chords: uniqueChords,
-    sections,
-    progression: { "Canción": uniqueChords.slice(0, 6).join(" - ") }
-  };
+  // Return as plain text — rendered in <pre> with monospace font
+  return { type: "text", content: sheetText };
 }
 
 function buildSectionsFromChordSheet(lines, title, artist) {
@@ -635,11 +624,10 @@ async function fetchChordsViaEChords(title, artist) {
   const rawText = preMatch
     ? preMatch[1].replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&nbsp;/g, " ")
     : "";
-  const lines = rawText.split("\n").map(l => l.trim()).filter(Boolean);
-  const sections = buildSectionsFromChordSheet(lines, title, artist);
-  return sections.length
-    ? { key: guessKey(uniqueChords), tempo: "—", chords: uniqueChords, sections, progression: {} }
-    : null;
+
+  const sheetText = rawText.trim();
+  if (!sheetText) throw new Error("E-Chords: contenido vacío");
+  return { type: "text", content: sheetText };
 }
 
 // ── Main orchestrator ─────────────────────────────────────────
