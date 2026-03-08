@@ -11,10 +11,10 @@
   <div class="page-shell">
     <header class="hero">
       <div class="hero-copy">
-        <p class="eyebrow">Lector Integrado</p>
+        <p class="eyebrow">Lector Integrado Pro</p>
         <h1>Acordes Live</h1>
         <p class="hero-text">
-          Sincroniza tu cuenta de Spotify. La app extraerá e incrustará el texto puro de los acordes aquí mismo.
+          Sincroniza Spotify. La app extraerá la letra, pintará los acordes y hará scroll automático al ritmo de la música.
         </p>
       </div>
     </header>
@@ -90,11 +90,20 @@
             </div>
           </div>
 
-          <p class="helper" style="margin-bottom: 15px; color: #a4aab6;">
-            El texto se extraerá automáticamente. Ej: Si suena Treat You Better de Shawn Mendes, el robot buscará la versión para imprimir y la pegará aquí.
-          </p>
+          <div id="chords-controls" style="display: none; justify-content: space-between; align-items: center; margin-bottom: 15px; background: rgba(255,255,255,0.05); padding: 12px 18px; border-radius: 12px; border: 1px solid rgba(255,255,255,0.1);">
+            <div style="display: flex; align-items: center; gap: 10px;">
+              <button id="btn-transpose-down" class="button button-secondary" style="min-height: 32px; padding: 0 15px; font-size: 20px;">-</button>
+              <span id="transpose-label" style="font-weight: bold; width: 70px; text-align: center; font-family: monospace;">Tono: 0</span>
+              <button id="btn-transpose-up" class="button button-secondary" style="min-height: 32px; padding: 0 15px; font-size: 20px;">+</button>
+            </div>
+            <div>
+              <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; color: #1DB954; font-weight: bold;">
+                <input type="checkbox" id="auto-scroll-cb" checked style="width: 18px; height: 18px;"> Auto-Scroll
+              </label>
+            </div>
+          </div>
 
-          <pre id="chords-view" style="font-size: 14px; line-height: 1.5;">Conecta Spotify y dale play a tu música para iniciar la extracción...</pre>
+          <pre id="chords-view" style="font-size: 14px; line-height: 1.5; scroll-behavior: smooth;">Conecta Spotify y dale play a tu música para iniciar la extracción...</pre>
           
         </section>
       </main>
