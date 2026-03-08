@@ -10,7 +10,7 @@ const STORAGE_KEYS = {
 const SPOTIFY_SCOPES = ["user-read-currently-playing", "user-read-playback-state"];
 
 const state = {
-  settings: { clientId: "", anthropicKey: "" },
+  settings: { clientId: "", geminiKey: "" },
   tokens: null,
   currentTrack: null,
   authTone: "muted",   authText: "Sin conectar",
@@ -43,7 +43,7 @@ async function boot() {
 // ─── DOM Cache ────────────────────────────────────────────────
 function cacheElements() {
   const ids = [
-    "spotify-client-id", "anthropic-key", "redirect-uri",
+    "spotify-client-id", "gemini-key", "redirect-uri",
     "copy-url-btn", "connect-btn", "disconnect-btn",
     "auth-status-pill", "auth-helper",
     "playback-pill", "cover-art",
@@ -70,8 +70,8 @@ function bindEvents() {
     state.settings.clientId = el.spotifyClientId.value.trim();
     saveSettings();
   });
-  el.anthropicKey.addEventListener("input", () => {
-    state.settings.anthropicKey = el.anthropicKey.value.trim();
+  el.geminiKey.addEventListener("input", () => {
+    state.settings.geminiKey = el.geminiKey.value.trim();
     saveSettings();
   });
   el.copyUrlBtn.addEventListener("click", copyRedirectUri);
@@ -85,7 +85,7 @@ function hydrateState() {
     const s = JSON.parse(localStorage.getItem(STORAGE_KEYS.settings) || "null");
     if (s) {
       if (typeof s.clientId === "string") state.settings.clientId = s.clientId;
-      if (typeof s.anthropicKey === "string") state.settings.anthropicKey = s.anthropicKey;
+      if (typeof s.geminiKey === "string") state.settings.geminiKey = s.geminiKey;
     }
   } catch (_) {}
   try {
@@ -381,83 +381,218 @@ async function fetchLyricsFromLyricsOvh(track) {
 }
 
 // ─── Chords via Anthropic API ─────────────────────────────────
-async function fetchChordsForTrack(track, trackKey) {
-  const apiKey = state.settings.anthropicKey.trim();
-  if (!apiKey) {
-    state.chordsTone = "warn";
-    state.chordsText = "Sin API key";
-    state.chordsData = null;
-    if (!el.chordsStatusText) return;
-    el.chordsStatusText.textContent = "Agrega tu Anthropic API key en la configuración para ver los acordes.";
-    renderChords();
-    return;
-  }
-
-  const title  = cleanTrackLookupText(track.name);
-  const artist = track.artists[0] || "";
-
-  const prompt =
+// ─── Chord prompt (shared) ────────────────────────────────────
+function buildChordPrompt(title, artist) {
+  return (
     `Give me the real chords for "${title}" by "${artist}".\n\n` +
-    `Reply with ONLY a JSON object, no markdown, no extra text:\n` +
+    `Reply with ONLY valid JSON, no markdown fences, no extra text:\n` +
     `{"key":"G","tempo":"moderado","chords":["G","Em","C","D"],` +
     `"sections":[` +
       `{"name":"Verso","lines":[` +
-        `{"text":"First line of real lyrics","chords":["G","","Em",""]},` +
-        `{"text":"Second line of real lyrics","chords":["C","","D",""]}` +
-      `]},` +
+        `{"text":"First real lyrics line","chords":["G","","Em",""]},` +
+        `{"text":"Second real lyrics line","chords":["C","","D",""]}]},` +
       `{"name":"Coro","lines":[` +
-        `{"text":"First line of chorus","chords":["C","","G",""]},` +
-        `{"text":"Second line of chorus","chords":["D","","Em",""]}` +
-      `]}` +
-    `],` +
+        `{"text":"First chorus line","chords":["C","","G",""]},` +
+        `{"text":"Second chorus line","chords":["D","","Em",""]}]}],` +
     `"progression":{"Verso":"G - Em - C - D","Coro":"C - G - D - Em"}}\n\n` +
-    `Rules:\n` +
-    `- Use the REAL chords of this specific song, not generic ones.\n` +
-    `- Include real lyrics text in each line.\n` +
-    `- Include at least Verso and Coro sections.\n` +
-    `- Each line must have exactly 4 chords (use "" for silent beats).\n` +
-    `- "key" = actual key of the song.`;
+    `IMPORTANT: Use the REAL chords of this specific song. Include real lyrics. ` +
+    `At least Verso + Coro. Each line exactly 4 chords (empty string for silent beats). ` +
+    `key = actual key of the song.`
+  );
+}
 
-  try {
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: JSON.stringify({
-        model: "claude-opus-4-5",
-        max_tokens: 2000,
-        messages: [{ role: "user", content: prompt }]
-      })
+// ─── Strategy 1: Gemini free API ─────────────────────────────
+async function fetchChordsViaGemini(title, artist, geminiKey) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${geminiKey}`;
+  const response = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ parts: [{ text: buildChordPrompt(title, artist) }] }],
+      generationConfig: { temperature: 0.2, maxOutputTokens: 2000 }
+    })
+  });
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({}));
+    throw new Error(err?.error?.message || `Gemini HTTP ${response.status}`);
+  }
+  const data = await response.json();
+  const raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  if (!raw) throw new Error("Gemini devolvió respuesta vacía.");
+  return parseChordJSON(raw);
+}
+
+// ─── Strategy 2: Scrape chord sites via CORS proxy ────────────
+async function fetchChordsViaScrape(title, artist) {
+  // Try multiple sources in order
+  const sources = [
+    () => scrapeEChords(title, artist),
+    () => scrapeCifraclub(title, artist),
+  ];
+  for (const src of sources) {
+    try {
+      const result = await src();
+      if (result) return result;
+    } catch (_) {}
+  }
+  return null;
+}
+
+async function scrapeEChords(title, artist) {
+  const q   = encodeURIComponent(`${artist} ${title}`);
+  const url = `https://www.e-chords.com/search-all/${q}`;
+  const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(url)}`;
+  const res  = await fetch(proxy);
+  if (!res.ok) return null;
+  const { contents } = await res.json();
+  // Find first chord page link
+  const match = contents.match(/href="(https:\/\/www\.e-chords\.com\/chords\/[^"]+)"/);
+  if (!match) return null;
+
+  // Fetch the chord page
+  const pageProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(match[1])}`;
+  const pageRes = await fetch(pageProxy);
+  if (!pageRes.ok) return null;
+  const { contents: pageHtml } = await pageRes.json();
+  return parseEChordsHtml(pageHtml, title, artist);
+}
+
+function parseEChordsHtml(html, title, artist) {
+  // Extract chord tokens like [Am] [F] etc from the pre/chord block
+  const chordMatches = [...html.matchAll(/\[([A-G][#b]?(?:m|maj|min|dim|aug|sus|add)?[0-9]?)\]/g)];
+  if (chordMatches.length < 3) return null;
+  const uniqueChords = [...new Set(chordMatches.map(m => m[1]))].slice(0, 8);
+
+  // Extract lyrics lines (strip HTML tags)
+  const bodyMatch = html.match(/<pre[^>]*id="core"[^>]*>([\s\S]*?)<\/pre>/i) ||
+                    html.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
+  const rawText = bodyMatch
+    ? bodyMatch[1].replace(/<[^>]+>/g, "").replace(/&amp;/g,"&").replace(/&nbsp;/g," ")
+    : "";
+
+  const lines = rawText.split("\n").filter(l => l.trim()).slice(0, 20);
+  // Build sections from lines
+  const sections = buildSectionsFromLines(lines, title);
+
+  return {
+    key: guessKey(uniqueChords),
+    tempo: "—",
+    chords: uniqueChords,
+    sections,
+    progression: { "Canción": uniqueChords.join(" - ") }
+  };
+}
+
+async function scrapeCifraclub(title, artist) {
+  const q = encodeURIComponent(`${artist} ${title} site:cifraclub.com`);
+  // Use Google's cache-friendly search to find the page URL first
+  const searchUrl = `https://www.cifraclub.com.br/busca/?q=${encodeURIComponent(title + " " + artist)}`;
+  const proxy = `https://api.allorigins.win/get?url=${encodeURIComponent(searchUrl)}`;
+  const res = await fetch(proxy);
+  if (!res.ok) return null;
+  const { contents } = await res.json();
+  const match = contents.match(/href="(\/[^"]+\/[^"]+\/)"[^>]*class="[^"]*gs-title/);
+  if (!match) return null;
+
+  const pageUrl = "https://www.cifraclub.com.br" + match[1];
+  const pageProxy = `https://api.allorigins.win/get?url=${encodeURIComponent(pageUrl)}`;
+  const pageRes = await fetch(pageProxy);
+  if (!pageRes.ok) return null;
+  const { contents: pageHtml } = await pageRes.json();
+  return parseCifraclubHtml(pageHtml, title, artist);
+}
+
+function parseCifraclubHtml(html, title, artist) {
+  const chordMatches = [...html.matchAll(/class="[^"]*chord[^"]*"[^>]*>([A-G][#b]?(?:m|maj|min|dim|aug|sus)?[0-9]?)</g)];
+  if (chordMatches.length < 3) return null;
+  const uniqueChords = [...new Set(chordMatches.map(m => m[1]))].slice(0, 8);
+
+  return {
+    key: guessKey(uniqueChords),
+    tempo: "—",
+    chords: uniqueChords,
+    sections: [{ name: "Canción", lines: [{ text: `${title} — ${artist}`, chords: uniqueChords.slice(0,4) }] }],
+    progression: { "Canción": uniqueChords.join(" - ") }
+  };
+}
+
+function buildSectionsFromLines(lines, title) {
+  // Simple heuristic: group lines into sections of 4
+  const sections = [];
+  const sectionNames = ["Intro", "Verso", "Pre-Coro", "Coro", "Puente"];
+  let si = 0;
+  for (let i = 0; i < lines.length; i += 4) {
+    const chunk = lines.slice(i, i + 4);
+    if (chunk.length === 0) continue;
+    sections.push({
+      name: sectionNames[si++] || `Sección ${si}`,
+      lines: chunk.map(text => ({ text: text.slice(0,50), chords: ["", "", "", ""] }))
     });
+    if (si >= sectionNames.length) break;
+  }
+  return sections.length ? sections : [{ name: "Canción", lines: [{ text: title, chords: [] }] }];
+}
 
-    if (trackKey !== state.lastTrackKey) return;
+function guessKey(chords) {
+  // Very simple: take root of first chord
+  const first = chords[0] || "C";
+  return first.match(/^[A-G][#b]?m?/)?.[0] || first;
+}
 
-    if (!response.ok) {
-      const errBody = await response.json().catch(() => ({}));
-      const msg = errBody?.error?.message || `HTTP ${response.status}`;
-      throw new Error(msg);
+// ─── Main entry: try Gemini first, then scraping ──────────────
+async function fetchChordsForTrack(track, trackKey) {
+  const title  = cleanTrackLookupText(track.name);
+  const artist = track.artists[0] || "";
+  const geminiKey = state.settings.geminiKey.trim();
+
+  // Show loading
+  state.chordsTone = "warn";
+  state.chordsText = "Buscando…";
+  state.chordsData = null;
+  if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando acordes…";
+  renderChords();
+
+  let chordData = null;
+  let errorMsg  = "";
+
+  // ── Strategy 1: Gemini (if key provided) ──
+  if (geminiKey) {
+    try {
+      chordData = await fetchChordsViaGemini(title, artist, geminiKey);
+    } catch (e) {
+      errorMsg = `Gemini: ${e.message}`;
     }
+  }
 
-    const data = await response.json();
-    const raw  = data.content?.map(b => b.text || "").join("") || "";
-    const chordData = parseChordJSON(raw);
+  if (trackKey !== state.lastTrackKey) return;
 
-    if (!chordData) throw new Error("No pude parsear la respuesta de acordes.");
+  // ── Strategy 2: Scrape chord sites ──
+  if (!chordData) {
+    if (el.chordsStatusText) el.chordsStatusText.textContent = geminiKey
+      ? "Gemini falló, intentando scraping…"
+      : "Buscando en sitios de acordes…";
+    try {
+      chordData = await fetchChordsViaScrape(title, artist);
+    } catch (e) {
+      errorMsg += ` | Scrape: ${e.message}`;
+    }
+  }
 
+  if (trackKey !== state.lastTrackKey) return;
+
+  if (chordData) {
     state.chordsTone = "live";
     state.chordsText = "Encontrados";
     state.chordsData = chordData;
-
-  } catch (e) {
-    state.chordsTone = "error";
-    state.chordsText = "Error";
+  } else {
+    state.chordsTone = "warn";
+    state.chordsText = "No encontrados";
     state.chordsData = null;
     if (el.chordsStatusText) {
-      el.chordsStatusText.textContent = `Error: ${e.message}`;
+      el.chordsStatusText.textContent =
+        (geminiKey ? "" : "Agrega una Gemini API key (gratis) para mejores resultados. ") +
+        "No se encontraron acordes automáticamente. Usa los links de búsqueda abajo." +
+        (errorMsg ? `\nDetalle: ${errorMsg}` : "");
     }
   }
 
@@ -498,7 +633,7 @@ function renderAll() {
 
 function renderSetup() {
   el.spotifyClientId.value = state.settings.clientId;
-  el.anthropicKey.value    = state.settings.anthropicKey;
+  el.geminiKey.value       = state.settings.geminiKey;
   el.redirectUri.value     = getRedirectUri();
   el.authStatusPill.className   = `status-pill ${pillClassForTone(state.authTone)}`;
   el.authStatusPill.textContent = state.authText;
