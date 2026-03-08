@@ -168,7 +168,7 @@
             <li>Sube estos archivos a GitHub y activa GitHub Pages.</li>
             <li>Copia la Redirect URI de abajo y pégala en tu app de Spotify.</li>
             <li>Pega tu Spotify Client ID y conecta la cuenta.</li>
-            <li>¡Listo! Los acordes se buscan automáticamente — gratis, sin keys, sin registro.</li>
+            <li>Crea tu key gratis en <a href="https://console.groq.com/keys" target="_blank" style="color:#9fcbff">console.groq.com/keys</a> (solo email, sin tarjeta) y pégala en el campo de abajo.</li>
           </ol>
 
           <div class="field-stack">
@@ -183,6 +183,19 @@
                 <input id="redirect-uri" placeholder="https://tu-usuario.github.io/tu-repo/">
                 <button type="button" class="button button-secondary" id="copy-url-btn">Copiar</button>
               </div>
+            </div>
+
+            <div>
+              <label for="groq-key">
+                Groq API Key
+                <span style="color:var(--accent-2);font-weight:400;letter-spacing:0;text-transform:none"> — gratis, sin tarjeta</span>
+              </label>
+              <input id="groq-key" type="password" placeholder="gsk_…" autocomplete="off">
+              <p class="api-key-hint">
+                Regístrate gratis en
+                <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">console.groq.com/keys</a>
+                — solo email, sin tarjeta. Copia la key y pégala aquí.
+              </p>
             </div>
 
 
