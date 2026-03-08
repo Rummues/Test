@@ -168,7 +168,7 @@
             <li>Sube estos archivos a GitHub y activa GitHub Pages.</li>
             <li>Copia la Redirect URI de abajo y pégala en tu app de Spotify.</li>
             <li>Pega tu Spotify Client ID y conecta la cuenta.</li>
-            <li>Crea tu key gratis en <a href="https://console.groq.com/keys" target="_blank" style="color:#9fcbff">console.groq.com/keys</a> (solo email, sin tarjeta) y pégala en el campo de abajo.</li>
+            <li>Crea tu key gratis en <a href="https://workers.cloudflare.com" target="_blank" style="color:#9fcbff">workers.cloudflare.com</a> (solo email, sin tarjeta) y pégala en el campo de abajo.</li>
           </ol>
 
           <div class="field-stack">
@@ -186,15 +186,13 @@
             </div>
 
             <div>
-              <label for="groq-key">
-                Groq API Key
-                <span style="color:var(--accent-2);font-weight:400;letter-spacing:0;text-transform:none"> — gratis, sin tarjeta</span>
-              </label>
-              <input id="groq-key" type="password" placeholder="gsk_…" autocomplete="off">
+              <label for="worker-url">URL de tu Cloudflare Worker</label>
+              <input id="worker-url" type="url" placeholder="https://mi-proxy.TU-USUARIO.workers.dev" autocomplete="off">
               <p class="api-key-hint">
-                Regístrate gratis en
-                <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer">console.groq.com/keys</a>
-                — solo email, sin tarjeta. Copia la key y pégala aquí.
+                Crea el Worker gratis en
+                <a href="https://workers.cloudflare.com" target="_blank" rel="noreferrer">workers.cloudflare.com</a>
+                (solo email, sin tarjeta) y pega el código <code>worker.js</code> que viene en el repo.
+                Luego copia aquí la URL que te da Cloudflare.
               </p>
             </div>
 
