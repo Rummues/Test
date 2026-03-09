@@ -24,8 +24,9 @@ const state = {
   lastSyncAt: 0,
   pollTimer: null,
   progressTimer: null,
-  scroll: { auto: true, speed: 1.0, userPaused: false },
-  transpose: 0
+  scroll: { speed: 1.0, userPaused: true, _rafId: null, _lastTime: null, _expectedY: null },
+  transpose: 0,
+  enharmonic: false
 };
 
 const el = {};
@@ -55,7 +56,7 @@ function cacheElements() {
     "progress-left", "progress-right", "progress-fill",
     "sync-label", "spotify-link",
     "chords-pill", "chords-key-badge", "chords-chips-row",
-    "chords-sections", "chords-status-text",
+    "chords-sections", "chords-status-text", "enharmonic-btn",
   ];
   ids.forEach(id => {
     const camel = id.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
@@ -77,6 +78,10 @@ function bindEvents() {
   // Teleprompter controls
   el.scrollToggle?.addEventListener("click", () => {
     state.scroll.userPaused = !state.scroll.userPaused;
+    if (!state.scroll.userPaused) {
+      state.scroll._expectedY = window.scrollY;
+      state.scroll._lastTime  = null;
+    }
     updateScrollUI();
   });
   el.scrollSlower?.addEventListener("click", () => {
@@ -101,6 +106,15 @@ function bindEvents() {
     if (el.transposeLabel) el.transposeLabel.textContent = (state.transpose > 0 ? "+" : "") + state.transpose;
   });
 
+  // Enharmonic conversion (flat → sharp, keeping Bb family as-is)
+  el.enharmonicBtn?.addEventListener("click", () => {
+    state.enharmonic = !state.enharmonic;
+    if (el.enharmonicBtn) {
+      el.enharmonicBtn.classList.toggle("active", state.enharmonic);
+    }
+    renderChords();
+  });
+
   // Source switcher delegation
   el.sourceSwitcher?.addEventListener("click", e => {
     const btn = e.target.closest("[data-src-idx]");
@@ -115,12 +129,6 @@ function bindEvents() {
     }
   });
 
-  // Pause auto-scroll if user manually scrolls the window
-  window.addEventListener("scroll", () => {
-    if (state.scroll._programmatic) return;
-    state.scroll.userPaused = true;
-    updateScrollUI();
-  }, { passive: true });
   el.redirectUri.addEventListener("input", () => {
     state.settings.redirectUri = el.redirectUri.value.trim();
     saveSettings();
@@ -383,7 +391,11 @@ async function loadTrackResources(track, trackKey) {
   // Scroll back to top and reset teleprompter for new song
   window.scrollTo({ top: 0, behavior: "smooth" });
   if (el.chordsSections) el.chordsSections.scrollTop = 0;
-  state.scroll.userPaused = false;
+  state.scroll.userPaused = true;   // scroll starts paused on new song
+  state.scroll._expectedY = 0;
+  state.scroll._lastTime  = null;
+  state.enharmonic = false;
+  if (el.enharmonicBtn) el.enharmonicBtn.classList.remove("active");
   showScrollControls(false);
   updateScrollUI();
 
@@ -636,6 +648,16 @@ function parseCifraclubPage(html, title, artist) {
 const NOTES_SHARP = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
 const NOTES_FLAT  = ["C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"];
 
+// Convert flat enharmonics to sharps, keeping Bb family untouched
+// Eb→D#, Ab→G#, Db→C#, Gb→F#, Cb→B, Fb→E
+// Bb, Bbm, Bbdim, Bbsus, etc. — always kept as Bb
+function flatToSharpText(text) {
+  const flatMap = { "Eb":"D#", "Ab":"G#", "Db":"C#", "Gb":"F#", "Cb":"B", "Fb":"E" };
+  return text.replace(/\b(Eb|Ab|Db|Gb|Cb|Fb)([^b]|$)/g, (match, flat, after) => {
+    return (flatMap[flat] || flat) + after;
+  });
+}
+
 function transposeChord(chord, semitones) {
   if (!semitones) return chord;
   return chord.replace(/[A-G][#b]?/g, note => {
@@ -789,14 +811,22 @@ async function fetchChordsViaUltimateGuitar(title, artist) {
   const results = json?.store?.page?.data?.results || [];
   console.log("[UG] results count:", results.length);
 
-  // Find first chords result (not tab/bass/drum)
-  const chord = results.find(r =>
-    r.type === "Chords" &&
+  const badVersions = /live|acoustic|acústic|en\s*vivo|unplugged|demo|rehearsal|karaoke|remix|cover/i;
+
+  // Priority: matching artist + title, no bad keywords, type=Chords
+  const chordResults = results.filter(r => r.type === "Chords");
+  const artistMatch  = chordResults.filter(r =>
     r.artist_name?.toLowerCase().includes(artist.toLowerCase().split(" ")[0])
-  ) || results.find(r => r.type === "Chords");
+  );
+  // Try clean studio version first, then any version
+  const chord =
+    artistMatch.find(r => !badVersions.test(r.song_name || "")) ||
+    artistMatch[0] ||
+    chordResults.find(r => !badVersions.test(r.song_name || "")) ||
+    chordResults[0];
 
   if (!chord?.tab_url) throw new Error("UG: sin acordes");
-  console.log("[UG] chord page:", chord.tab_url);
+  console.log("[UG] chord page:", chord.tab_url, "| song:", chord.song_name);
 
   const pageHtml = await fetchHtmlViaWorker(chord.tab_url);
   if (!pageHtml) throw new Error("UG: sin respuesta en página");
@@ -975,43 +1005,40 @@ function startProgressLoop() {
   startTeleprompterLoop();
 }
 
-// ─── Teleprompter — RAF-based, truly smooth ───────────────────
-// Strategy: instead of chasing a target position, we scroll at a
-// constant px/sec rate derived from content height ÷ song duration.
-// Speed multiplier directly scales px/sec. Dead simple, butter smooth.
+// ─── Teleprompter — free scroll (constant px/sec, toggle on/off) ─
 function startTeleprompterLoop() {
   if (state.scroll._rafId) cancelAnimationFrame(state.scroll._rafId);
-  state.scroll._lastTime = null;
+  state.scroll._lastTime  = null;
+  state.scroll._expectedY = null;
 
   function tick(now) {
     state.scroll._rafId = requestAnimationFrame(tick);
-    if (state.scroll.userPaused) return;
-    const track = state.currentTrack;
-    if (!track || !state.chordsData) return;
+    if (state.scroll.userPaused) {
+      state.scroll._lastTime = null;
+      return;
+    }
 
-    // Calculate scrollable range scoped to the chords section
-    const sections = el.chordsSections;
-    if (!sections) return;
-    const rect         = sections.getBoundingClientRect();
-    const secTop       = window.scrollY + rect.top;
-    const secScrollable = secTop + sections.scrollHeight - window.innerHeight;
-    if (secScrollable < 50) return;
+    // Detect manual scroll: user moved page away from where we put it
+    if (
+      state.scroll._expectedY !== null &&
+      Math.abs(window.scrollY - state.scroll._expectedY) > 8
+    ) {
+      state.scroll.userPaused = true;
+      updateScrollUI();
+      return;
+    }
 
-    const durationMs = track.durationMs || 180000;
-    // px per second = total scrollable px ÷ song seconds, scaled by speed
-    const pxPerSec = (secScrollable / (durationMs / 1000)) * state.scroll.speed;
-
-    // dt since last frame (capped at 100ms to avoid jumps after tab switch)
     if (!state.scroll._lastTime) { state.scroll._lastTime = now; return; }
     const dt = Math.min(now - state.scroll._lastTime, 100) / 1000;
     state.scroll._lastTime = now;
 
-    const step = pxPerSec * dt;
-    if (step < 0.01) return;
+    // base: 40px/sec × speed multiplier
+    const pxPerSec = 40 * state.scroll.speed;
+    const step     = pxPerSec * dt;
 
-    state.scroll._programmatic = true;
-    window.scrollBy({ top: step, behavior: "instant" });
-    setTimeout(() => { state.scroll._programmatic = false; }, 80);
+    const newY = window.scrollY + step;
+    window.scrollTo({ top: newY, behavior: "instant" });
+    state.scroll._expectedY = newY;
   }
 
   requestAnimationFrame(tick);
@@ -1134,9 +1161,10 @@ function renderChords() {
   // ── Plain-text chord sheet ──
   if (data.type === "text") {
     if (el.chordsSections) {
-      const displayed = state.transpose
+      let displayed = state.transpose
         ? applyTransposeToSheet(data.content, state.transpose)
         : data.content;
+      if (state.enharmonic) displayed = flatToSharpText(displayed);
       el.chordsSections.innerHTML = `<pre class="chord-sheet-pre">${highlightChords(escapeHtml(displayed))}</pre>`;
     }
     return;
