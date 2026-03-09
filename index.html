@@ -8,10 +8,17 @@
   <link rel="stylesheet" href="./styles.css">
   <style>
     /* ── Mobile responsive fixes ── */
-    @media (max-width: 480px) {
-      .chord-sheet-pre { font-size: 12px; }
-      .card { padding: 16px; }
-      h2 { font-size: 1.1rem; }
+    @media (max-width: 600px) {
+      .chord-sheet-pre { font-size: 11px; line-height: 1.5; }
+      .card { padding: 14px 12px; border-radius: 12px; }
+      h2 { font-size: 1rem; }
+      .section-label { font-size: 10px; }
+      .status-pill { font-size: 10px; padding: 3px 8px; }
+      .scroll-btn { width: 30px; height: 30px; font-size: 15px; }
+      .scroll-btn-toggle { padding: 0 10px; font-size: 11px; }
+      .now-playing-art { width: 52px; height: 52px; }
+      body { padding: 0; }
+      .app-shell { padding: 10px 8px; gap: 10px; }
     }
 
     /* ── Chords card extra styles ── */
@@ -121,6 +128,9 @@
     }
     .api-key-hint a { color: #9fcbff; text-decoration: none; font-weight: 600; }
     .api-key-hint a:hover { text-decoration: underline; }
+
+    /* Chord highlighting in pre sheets */
+    .chord-sheet-pre .chord { color: var(--accent-1); font-weight: 700; }
 
     /* Source switcher button */
     .chords-card-head { position: relative; }
@@ -274,22 +284,7 @@
         </section>
 
         <!-- Lyrics card -->
-        <section class="card">
-          <div class="card-head">
-            <div>
-              <p class="section-label">Letra</p>
-              <h2>Letra automática</h2>
-            </div>
-            <span class="status-pill status-pill-muted" id="lyrics-pill">Esperando</span>
-          </div>
-          <p class="helper" id="lyrics-copy">
-            Cuando cambie la canción, la app conseguirá la letra automáticamente.
-          </p>
-          <pre class="lyrics-view" id="lyrics-view">La letra aparecerá aquí cuando Spotify reporte una canción activa.</pre>
-          <div class="external-links">
-            <a id="lyrics-source-link" class="button button-secondary link-button hidden" href="#" target="_blank" rel="noreferrer">Abrir fuente de letra</a>
-          </div>
-        </section>
+
 
       </aside>
 
@@ -369,52 +364,7 @@
         </section>
 
         <!-- Search deck card -->
-        <section class="card">
-          <div class="card-head">
-            <div>
-              <p class="section-label">Búsqueda externa</p>
-              <h2>Búsquedas dirigidas</h2>
-            </div>
-            <span class="status-pill status-pill-muted" id="match-pill">Inactivo</span>
-          </div>
 
-          <div class="match-box" id="match-box">
-            Cuando cambie la canción, prepararé consultas exactas para encontrar acordes en sitios grandes.
-          </div>
-
-          <div class="query-grid">
-            <div class="query-card">
-              <span class="tiny-label">Ataque primario</span>
-              <p id="query-primary">Esperando una canción activa.</p>
-            </div>
-            <div class="query-card">
-              <span class="tiny-label">Ataque alternativo</span>
-              <p id="query-secondary">Aparecerá una variante para buscar cifras y acordes.</p>
-            </div>
-          </div>
-
-          <pre id="chords-view">Las búsquedas externas aparecerán aquí como respaldo.</pre>
-
-          <div class="external-sheet" id="external-sheet">
-            <div class="external-head">
-              <div>
-                <p class="section-label">Launcher</p>
-                <h3>Abre la mejor búsqueda en un toque</h3>
-              </div>
-              <span class="status-pill status-pill-muted" id="external-pill">Inactivo</span>
-            </div>
-            <p class="helper" id="external-copy">
-              Sin iframes frágiles. Solo enlaces exactos orientados a resultados.
-            </p>
-            <div class="external-links">
-              <a id="ddg-chords-link"   class="button button-primary  link-button hidden" href="#" target="_blank" rel="noreferrer">DuckDuckGo acordes</a>
-              <a id="ddg-spanish-link"  class="button button-secondary link-button hidden" href="#" target="_blank" rel="noreferrer">DuckDuckGo cifra</a>
-              <a id="google-chords-link" class="button button-secondary link-button hidden" href="#" target="_blank" rel="noreferrer">Google acordes</a>
-              <a id="google-lyrics-link" class="button button-secondary link-button hidden" href="#" target="_blank" rel="noreferrer">Google letra</a>
-              <button type="button" class="button button-secondary hidden" id="copy-query-btn">Copiar query</button>
-            </div>
-          </div>
-        </section>
 
       </main>
     </div>
