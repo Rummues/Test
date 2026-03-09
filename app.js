@@ -106,11 +106,17 @@ function bindEvents() {
     if (el.transposeLabel) el.transposeLabel.textContent = (state.transpose > 0 ? "+" : "") + state.transpose;
   });
 
-  // Enharmonic conversion (flat → sharp, keeping Bb family as-is)
+  // Enharmonic conversion toggle: ♭↔♯ (Bb family always kept)
   el.enharmonicBtn?.addEventListener("click", () => {
-    state.enharmonic = !state.enharmonic;
+    // cycle: off → flat→sharp → sharp→flat → off
+    const modes = [null, "flat2sharp", "sharp2flat"];
+    const cur = modes.indexOf(state.enharmonic);
+    state.enharmonic = modes[(cur + 1) % modes.length];
     if (el.enharmonicBtn) {
-      el.enharmonicBtn.classList.toggle("active", state.enharmonic);
+      el.enharmonicBtn.classList.toggle("active", !!state.enharmonic);
+      el.enharmonicBtn.textContent =
+        state.enharmonic === "flat2sharp" ? "♭→♯" :
+        state.enharmonic === "sharp2flat" ? "♯→♭" : "♭↔♯";
     }
     renderChords();
   });
@@ -388,11 +394,14 @@ async function fetchSpotifyPlayback() {
 }
 
 async function loadTrackResources(track, trackKey) {
-  // Scroll back to top and reset teleprompter for new song
-  window.scrollTo({ top: 0, behavior: "smooth" });
+  // On new song: scroll to chords card (not hard top), reset teleprompter
+  setTimeout(() => {
+    const target = el.chordsSections?.closest?.(".card") || document.querySelector(".chords-card");
+    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, 200);
   if (el.chordsSections) el.chordsSections.scrollTop = 0;
-  state.scroll.userPaused = true;   // scroll starts paused on new song
-  state.scroll._expectedY = 0;
+  state.scroll.userPaused = true;
+  state.scroll._acc       = 0;
   state.scroll._lastTime  = null;
   state.enharmonic = false;
   if (el.enharmonicBtn) el.enharmonicBtn.classList.remove("active");
@@ -641,20 +650,29 @@ function parseCifraclubPage(html, title, artist) {
   // Prepend capo/tone info if found
   if (capoInfo) sheetText = `[${capoInfo} — acordes transpuestos automáticamente]\n\n` + sheetText;
 
-  return { type: "text", content: sheetText, source: "Cifraclub" };
+  return { type: "text", content: sheetText, source: "Cifraclub", url: songUrl };
 }
 
 // ── Chord transposition engine ────────────────────────────────
 const NOTES_SHARP = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
 const NOTES_FLAT  = ["C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"];
 
-// Convert flat enharmonics to sharps, keeping Bb family untouched
-// Eb→D#, Ab→G#, Db→C#, Gb→F#, Cb→B, Fb→E
-// Bb, Bbm, Bbdim, Bbsus, etc. — always kept as Bb
+// Convert flat enharmonics to sharps — keeps Bb family untouched
 function flatToSharpText(text) {
-  const flatMap = { "Eb":"D#", "Ab":"G#", "Db":"C#", "Gb":"F#", "Cb":"B", "Fb":"E" };
-  return text.replace(/\b(Eb|Ab|Db|Gb|Cb|Fb)([^b]|$)/g, (match, flat, after) => {
-    return (flatMap[flat] || flat) + after;
+  // Eb→D#, Ab→G#, Db→C#, Gb→F#, Cb→B, Fb→E
+  // Bb stays Bb (matched by the \bBb lookbehind exclusion)
+  return text.replace(/\b(?!Bb)([A-A]b|Eb|Ab|Db|Gb|Cb|Fb)(?=[^a-z]|$)/g, n => {
+    const map = { "Eb":"D#","Ab":"G#","Db":"C#","Gb":"F#","Cb":"B","Fb":"E" };
+    return map[n] || n;
+  });
+}
+
+// Convert sharps to flats — keeps A# as Bb too, never produces Bb for other notes
+function sharpToFlatText(text) {
+  // C#→Db, D#→Eb, F#→Gb, G#→Ab, A#→Bb
+  return text.replace(/\b([A-G]#)(?=[^a-z]|$)/g, n => {
+    const map = { "C#":"Db","D#":"Eb","F#":"Gb","G#":"Ab","A#":"Bb" };
+    return map[n] || n;
   });
 }
 
@@ -792,7 +810,7 @@ async function fetchChordsViaEChords(title, artist) {
 
   const sheetText = rawText.trim();
   if (!sheetText) throw new Error("E-Chords: contenido vacío");
-  return { type: "text", content: sheetText };
+  return { type: "text", content: sheetText, source: "E-Chords", url: pageUrl };
 }
 
 // ── Ultimate Guitar scrape ────────────────────────────────────
@@ -831,7 +849,9 @@ async function fetchChordsViaUltimateGuitar(title, artist) {
   const pageHtml = await fetchHtmlViaWorker(chord.tab_url);
   if (!pageHtml) throw new Error("UG: sin respuesta en página");
 
-  return parseUltimateGuitarPage(pageHtml, title, artist);
+  const result = parseUltimateGuitarPage(pageHtml, title, artist);
+  result.url = chord.tab_url;
+  return result;
 }
 
 function parseUltimateGuitarPage(html, title, artist) {
@@ -1009,22 +1029,17 @@ function startProgressLoop() {
 function startTeleprompterLoop() {
   if (state.scroll._rafId) cancelAnimationFrame(state.scroll._rafId);
   state.scroll._lastTime  = null;
-  state.scroll._expectedY = null;
+  state.scroll._acc       = 0;   // sub-pixel accumulator for smoothness
 
   function tick(now) {
     state.scroll._rafId = requestAnimationFrame(tick);
+
+    // Update FAB visibility
+    const fab = document.getElementById("scroll-top-fab");
+    if (fab) fab.classList.toggle("visible", window.scrollY > 300);
+
     if (state.scroll.userPaused) {
       state.scroll._lastTime = null;
-      return;
-    }
-
-    // Detect manual scroll: user moved page away from where we put it
-    if (
-      state.scroll._expectedY !== null &&
-      Math.abs(window.scrollY - state.scroll._expectedY) > 8
-    ) {
-      state.scroll.userPaused = true;
-      updateScrollUI();
       return;
     }
 
@@ -1032,13 +1047,13 @@ function startTeleprompterLoop() {
     const dt = Math.min(now - state.scroll._lastTime, 100) / 1000;
     state.scroll._lastTime = now;
 
-    // base: 40px/sec × speed multiplier
-    const pxPerSec = 40 * state.scroll.speed;
-    const step     = pxPerSec * dt;
+    // Accumulate fractional pixels so low speeds don't jitter
+    state.scroll._acc += 40 * state.scroll.speed * dt;
+    const step = Math.floor(state.scroll._acc);
+    if (step < 1) return;                 // wait until we have ≥1 full pixel
+    state.scroll._acc -= step;
 
-    const newY = window.scrollY + step;
-    window.scrollTo({ top: newY, behavior: "instant" });
-    state.scroll._expectedY = newY;
+    window.scrollBy({ top: step, behavior: "instant" });
   }
 
   requestAnimationFrame(tick);
@@ -1130,10 +1145,31 @@ function renderSourceSwitcher() {
   }
   el.sourceSwitcher.style.display = "flex";
   el.sourceSwitcher.innerHTML = sources.map((s, i) =>
-    `<button class="source-btn${i === state.chordsSourceIdx ? " active" : ""}" data-src-idx="${i}">
+    `<button class="source-btn${i === state.chordsSourceIdx ? " active" : ""}" data-src-idx="${i}" data-url="${escapeHtml(s.url || '')}" title="${s.url ? 'Mantén presionado para copiar link' : ''}">
       ${escapeHtml(s.source || "Fuente " + (i+1))}
     </button>`
   ).join("");
+
+  // Long-press to copy URL
+  el.sourceSwitcher.querySelectorAll(".source-btn[data-url]").forEach(btn => {
+    let pressTimer = null;
+    const startPress = () => {
+      pressTimer = setTimeout(async () => {
+        const url = btn.dataset.url;
+        if (!url) return;
+        try {
+          await navigator.clipboard.writeText(url);
+          const orig = btn.textContent.trim();
+          btn.textContent = "✓ Copiado";
+          setTimeout(() => { btn.textContent = orig; }, 1500);
+        } catch(_) {}
+      }, 500);
+    };
+    const cancelPress = () => clearTimeout(pressTimer);
+    btn.addEventListener("pointerdown", startPress);
+    btn.addEventListener("pointerup",   cancelPress);
+    btn.addEventListener("pointerleave",cancelPress);
+  });
 }
 
 function renderChords() {
@@ -1164,7 +1200,8 @@ function renderChords() {
       let displayed = state.transpose
         ? applyTransposeToSheet(data.content, state.transpose)
         : data.content;
-      if (state.enharmonic) displayed = flatToSharpText(displayed);
+      if (state.enharmonic === "flat2sharp") displayed = flatToSharpText(displayed);
+      else if (state.enharmonic === "sharp2flat") displayed = sharpToFlatText(displayed);
       el.chordsSections.innerHTML = `<pre class="chord-sheet-pre">${highlightChords(escapeHtml(displayed))}</pre>`;
     }
     return;
