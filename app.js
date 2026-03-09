@@ -1397,33 +1397,51 @@ async function extractAndSetBackground(imageUrl) {
       ctx.drawImage(img, 0, 0, 64, 64);
       const data = ctx.getImageData(0, 0, 64, 64).data;
 
-      let r = 0, g = 0, b = 0, count = 0;
+      // Pick most vibrant pixels: high saturation, medium-high brightness
+      let bestScore = -1, br = 0, bg2 = 0, bb = 0;
+      let vibR = 0, vibG = 0, vibB = 0, vibCount = 0;
+
       for (let i = 0; i < data.length; i += 4) {
-        const pr = data[i], pg = data[i+1], pb = data[i+2];
-        const brightness = (pr + pg + pb) / 3;
-        // Include more pixels — even darker ones
-        if (brightness > 8) {
-          r += pr; g += pg; b += pb; count++;
+        const r = data[i], g = data[i+1], b = data[i+2];
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const brightness = max / 255;
+        const saturation = max === 0 ? 0 : (max - min) / max;
+
+        // Only consider pixels with meaningful saturation and brightness
+        if (saturation > 0.35 && brightness > 0.15) {
+          const score = saturation * brightness;
+          vibR += r * score;
+          vibG += g * score;
+          vibB += b * score;
+          vibCount += score;
         }
       }
-      if (count === 0) { setPageBackground(null); return; }
-      r = Math.round(r / count);
-      g = Math.round(g / count);
-      b = Math.round(b / count);
 
-      // Boost saturation: amplify dominant channel, suppress others
-      const max = Math.max(r, g, b);
-      const min = Math.min(r, g, b);
-      const sat = max === 0 ? 0 : (max - min) / max;
+      let fr, fg, fb;
+      if (vibCount > 0) {
+        fr = Math.round(vibR / vibCount);
+        fg = Math.round(vibG / vibCount);
+        fb = Math.round(vibB / vibCount);
+      } else {
+        // Fallback: simple average
+        let sr = 0, sg = 0, sb = 0, sc = 0;
+        for (let i = 0; i < data.length; i += 4) {
+          sr += data[i]; sg += data[i+1]; sb += data[i+2]; sc++;
+        }
+        fr = Math.round(sr/sc); fg = Math.round(sg/sc); fb = Math.round(sb/sc);
+      }
 
-      // If already saturated enough, just boost brightness
-      // If very grey/dark, still show a subtle tint
-      const factor = 2.2;
-      r = Math.min(255, Math.round(r * factor));
-      g = Math.min(255, Math.round(g * factor));
-      b = Math.min(255, Math.round(b * factor));
+      // Boost so the color is punchy on a dark background
+      const max = Math.max(fr, fg, fb);
+      if (max > 0 && max < 180) {
+        const boost = 200 / max;
+        fr = Math.min(255, Math.round(fr * boost));
+        fg = Math.min(255, Math.round(fg * boost));
+        fb = Math.min(255, Math.round(fb * boost));
+      }
 
-      setPageBackground(`${r},${g},${b}`);
+      setPageBackground(`${fr},${fg},${fb}`);
     };
     img.src = dataUrl;
   } catch(e) {
