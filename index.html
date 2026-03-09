@@ -137,20 +137,13 @@
     .chord-sheet-pre .chord { color: #b5ff4d; font-weight: 800; letter-spacing: 0.03em; }
     .scroll-btn.active { background: var(--accent-2); color: #000; border-color: var(--accent-2); }
 
-    /* Source switcher — wraps on small screens */
+    /* Source switcher — inline flow, wraps on small screens */
     .source-switcher {
-      flex-wrap: wrap;
-      gap: 6px;
-    }
-    /* Source switcher button */
-    .chords-card-head { position: relative; }
-    .source-switcher {
-      position: absolute;
-      top: 0; right: 0;
       display: flex;
+      flex-wrap: wrap;
       align-items: center;
       gap: 6px;
-      z-index: 10;
+      margin-bottom: 10px;
     }
     .source-btn {
       background: rgba(255,255,255,0.07);
@@ -166,12 +159,23 @@
     .source-btn:hover { background: rgba(255,255,255,0.13); }
     .source-btn.active { border-color: var(--accent-1); color: var(--accent-1); }
 
-    /* Teleprompter scroll controls */
+    /* Teleprompter scroll controls — sticky/floating */
     .scroll-controls {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 6px;
+      flex-wrap: wrap;
+      position: sticky;
+      top: 8px;
+      z-index: 100;
+      background: rgba(13, 17, 23, 0.92);
+      backdrop-filter: blur(12px);
+      -webkit-backdrop-filter: blur(12px);
+      border-radius: 16px;
+      padding: 8px 12px;
+      border: 1px solid rgba(255,255,255,0.1);
       margin-bottom: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
     }
     .scroll-btn {
       background: rgba(255,255,255,0.07);
@@ -216,6 +220,32 @@
       width: 100%;
       box-sizing: border-box;
     }
+    /* Scroll-to-top FAB */
+    #scroll-top-fab {
+      position: fixed;
+      bottom: 24px;
+      right: 20px;
+      width: 46px;
+      height: 46px;
+      border-radius: 50%;
+      background: rgba(30,34,45,0.92);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.15);
+      color: #fff;
+      font-size: 20px;
+      cursor: pointer;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      transition: opacity 0.2s, transform 0.2s;
+      z-index: 999;
+    }
+    #scroll-top-fab.visible {
+      display: flex;
+    }
+    #scroll-top-fab:hover { transform: scale(1.1); }
   </style>
 </head>
 <body>
@@ -367,7 +397,7 @@
             <span class="scroll-speed-label" id="transpose-label" style="min-width:36px;text-align:center">0</span>
             <button class="scroll-btn" id="transpose-up" title="Subir semitono">♯</button>
             <span style="width:1px;background:var(--line);height:22px;margin:0 4px;display:inline-block"></span>
-            <button class="scroll-btn" id="enharmonic-btn" title="Convertir bemoles a sostenidos (excepto Bb)">♭→♯</button>
+            <button class="scroll-btn" id="enharmonic-btn" title="Convertir bemoles↔sostenidos (Bb siempre se mantiene)">♭↔♯</button>
           </div>
 
           <div id="chords-sections">
@@ -383,6 +413,9 @@
       </main>
     </div>
   </div>
+  <!-- Scroll to top FAB -->
+  <button id="scroll-top-fab" aria-label="Volver al inicio" title="Volver al inicio" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
+
   <script src="./app.js" defer></script>
 </body>
 </html>
