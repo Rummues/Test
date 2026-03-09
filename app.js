@@ -143,11 +143,38 @@ function bindEvents() {
   el.connectBtn.addEventListener("click", startSpotifyLogin);
   el.disconnectBtn.addEventListener("click", disconnectSpotify);
 
-  // FAB + scroll controls visibility on scroll
+  // JS-driven sticky for scroll-controls + FAB visibility
   const fab = document.getElementById("scroll-top-fab");
+  const placeholder = document.getElementById("scroll-controls-placeholder");
+
   window.addEventListener("scroll", () => {
+    // FAB
     if (fab) fab.classList.toggle("visible", window.scrollY > 300);
+
+    // Sticky scroll-controls
+    const ctrl = el.scrollControls;
+    if (!ctrl || ctrl.style.display === "none") return;
+
+    if (ctrl.classList.contains("is-pinned")) {
+      // Already pinned — unpin if we've scrolled back above origin
+      const originTop = parseFloat(placeholder.dataset.originTop || "0");
+      if (window.scrollY < originTop - 8) {
+        ctrl.classList.remove("is-pinned");
+        placeholder.style.display = "none";
+      }
+    } else {
+      // Not pinned — pin if top of element has reached viewport top
+      const rect = ctrl.getBoundingClientRect();
+      if (rect.top <= 8) {
+        // Save origin position and height for placeholder
+        placeholder.dataset.originTop = String(window.scrollY + rect.top);
+        placeholder.style.display = "block";
+        placeholder.style.height  = ctrl.offsetHeight + "px";
+        ctrl.classList.add("is-pinned");
+      }
+    }
   }, { passive: true });
+
   if (fab) {
     fab.addEventListener("click", () => {
       state.scroll.userPaused = true;
@@ -1096,7 +1123,14 @@ function updateScrollUI() {
 }
 
 function showScrollControls(visible) {
-  if (el.scrollControls) el.scrollControls.style.display = visible ? "flex" : "none";
+  if (el.scrollControls) {
+    el.scrollControls.style.display = visible ? "flex" : "none";
+    if (!visible) {
+      el.scrollControls.classList.remove("is-pinned");
+      const ph = document.getElementById("scroll-controls-placeholder");
+      if (ph) ph.style.display = "none";
+    }
+  }
 }
 
 // ─── Render ───────────────────────────────────────────────────
