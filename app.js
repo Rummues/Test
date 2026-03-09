@@ -1391,78 +1391,92 @@ async function extractAndSetBackground(imageUrl) {
 
     const img = new Image();
     img.onload = () => {
+      const SIZE = 64;
       const canvas = document.createElement("canvas");
-      canvas.width = canvas.height = 64;
+      canvas.width = canvas.height = SIZE;
       const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0, 64, 64);
-      const data = ctx.getImageData(0, 0, 64, 64).data;
+      ctx.drawImage(img, 0, 0, SIZE, SIZE);
+      const data = ctx.getImageData(0, 0, SIZE, SIZE).data;
 
-      // Pick most vibrant pixels: high saturation, medium-high brightness
-      let bestScore = -1, br = 0, bg2 = 0, bb = 0;
-      let vibR = 0, vibG = 0, vibB = 0, vibCount = 0;
-
+      // Collect vibrant pixels with their scores
+      const pixels = [];
       for (let i = 0; i < data.length; i += 4) {
         const r = data[i], g = data[i+1], b = data[i+2];
         const max = Math.max(r, g, b);
         const min = Math.min(r, g, b);
         const brightness = max / 255;
         const saturation = max === 0 ? 0 : (max - min) / max;
-
-        // Only consider pixels with meaningful saturation and brightness
-        if (saturation > 0.35 && brightness > 0.15) {
-          const score = saturation * brightness;
-          vibR += r * score;
-          vibG += g * score;
-          vibB += b * score;
-          vibCount += score;
+        if (saturation > 0.3 && brightness > 0.15) {
+          pixels.push({ r, g, b, score: saturation * brightness });
         }
       }
 
-      let fr, fg, fb;
-      if (vibCount > 0) {
-        fr = Math.round(vibR / vibCount);
-        fg = Math.round(vibG / vibCount);
-        fb = Math.round(vibB / vibCount);
+      if (pixels.length === 0) { setPageBackground(null, null); return; }
+
+      // Sort by score descending
+      pixels.sort((a, b2) => b2.score - a.score);
+
+      // Color 1: weighted average of top vibrant pixels (top 30%)
+      const top = Math.max(1, Math.floor(pixels.length * 0.3));
+      let r1 = 0, g1 = 0, b1 = 0, w1 = 0;
+      for (let i = 0; i < top; i++) {
+        const p = pixels[i];
+        r1 += p.r * p.score; g1 += p.g * p.score; b1 += p.b * p.score; w1 += p.score;
+      }
+      r1 = Math.round(r1/w1); g1 = Math.round(g1/w1); b1 = Math.round(b1/w1);
+
+      // Color 2: find pixels sufficiently different from color 1
+      let r2 = 0, g2 = 0, b2 = 0, w2 = 0;
+      for (const p of pixels) {
+        const dist = Math.sqrt((p.r-r1)**2 + (p.g-g1)**2 + (p.b-b1)**2);
+        if (dist > 60) {
+          r2 += p.r * p.score; g2 += p.g * p.score; b2 += p.b * p.score; w2 += p.score;
+        }
+      }
+      if (w2 === 0) {
+        // No distinct second color — use a darker version of color 1
+        r2 = Math.round(r1 * 0.5); g2 = Math.round(g1 * 0.5); b2 = Math.round(b1 * 0.5);
       } else {
-        // Fallback: simple average
-        let sr = 0, sg = 0, sb = 0, sc = 0;
-        for (let i = 0; i < data.length; i += 4) {
-          sr += data[i]; sg += data[i+1]; sb += data[i+2]; sc++;
+        r2 = Math.round(r2/w2); g2 = Math.round(g2/w2); b2 = Math.round(b2/w2);
+      }
+
+      // Boost both colors to be punchy
+      function boost(r, g, b) {
+        const max = Math.max(r, g, b);
+        if (max > 0 && max < 190) {
+          const f = 210 / max;
+          return [Math.min(255, Math.round(r*f)), Math.min(255, Math.round(g*f)), Math.min(255, Math.round(b*f))];
         }
-        fr = Math.round(sr/sc); fg = Math.round(sg/sc); fb = Math.round(sb/sc);
+        return [r, g, b];
       }
+      [r1,g1,b1] = boost(r1,g1,b1);
+      [r2,g2,b2] = boost(r2,g2,b2);
 
-      // Boost so the color is punchy on a dark background
-      const max = Math.max(fr, fg, fb);
-      if (max > 0 && max < 180) {
-        const boost = 200 / max;
-        fr = Math.min(255, Math.round(fr * boost));
-        fg = Math.min(255, Math.round(fg * boost));
-        fb = Math.min(255, Math.round(fb * boost));
-      }
-
-      setPageBackground(`${fr},${fg},${fb}`);
+      setPageBackground(`${r1},${g1},${b1}`, `${r2},${g2},${b2}`);
     };
     img.src = dataUrl;
   } catch(e) {
     console.log("[BG] color extract failed:", e.message);
-    setPageBackground(null);
+    setPageBackground(null, null);
   }
 }
 
-function setPageBackground(rgb) {
+function setPageBackground(rgb1, rgb2) {
   const bg = document.getElementById("dynamic-bg");
   if (!bg) return;
-  if (!rgb) {
+  if (!rgb1) {
     bg.style.background = "";
     return;
   }
-  // Full-screen color wash — dark but clearly tinted
+  const c2 = rgb2 || rgb1;
+  // Diagonal split with soft blend between the two dominant colors
   bg.style.background = `
-    radial-gradient(ellipse 200% 200% at 50% 50%,
-      rgba(${rgb}, 0.45) 0%,
-      rgba(${rgb}, 0.25) 50%,
-      rgba(${rgb}, 0.10) 100%
+    linear-gradient(
+      135deg,
+      rgba(${rgb1}, 0.55) 0%,
+      rgba(${rgb1}, 0.35) 35%,
+      rgba(${c2}, 0.35) 65%,
+      rgba(${c2}, 0.55) 100%
     )
   `;
 }
