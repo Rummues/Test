@@ -24,7 +24,8 @@ const state = {
   lastSyncAt: 0,
   pollTimer: null,
   progressTimer: null,
-  scroll: { auto: true, speed: 1.0, userPaused: false }
+  scroll: { auto: true, speed: 1.0, userPaused: false },
+  transpose: 0
 };
 
 const el = {};
@@ -46,7 +47,7 @@ function cacheElements() {
   const ids = [
     "spotify-client-id", "worker-url", "redirect-uri",
   "scroll-controls", "scroll-toggle", "scroll-slower", "scroll-faster", "scroll-speed-label",
-  "source-switcher",
+  "source-switcher", "transpose-down", "transpose-up", "transpose-label",
     "copy-url-btn", "connect-btn", "disconnect-btn",
     "auth-status-pill", "auth-helper",
     "playback-pill", "cover-art",
@@ -94,6 +95,18 @@ function bindEvents() {
     state.scroll.userPaused = false;
     updateScrollUI();
   });
+  // Transpose controls
+  el.transposeDown?.addEventListener("click", () => {
+    state.transpose = (state.transpose - 1);
+    renderChords();
+    if (el.transposeLabel) el.transposeLabel.textContent = (state.transpose > 0 ? "+" : "") + state.transpose;
+  });
+  el.transposeUp?.addEventListener("click", () => {
+    state.transpose = (state.transpose + 1);
+    renderChords();
+    if (el.transposeLabel) el.transposeLabel.textContent = (state.transpose > 0 ? "+" : "") + state.transpose;
+  });
+
   // Source switcher delegation
   el.sourceSwitcher?.addEventListener("click", e => {
     const btn = e.target.closest("[data-src-idx]");
@@ -618,14 +631,37 @@ const NOTES_FLAT  = ["C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"];
 
 function transposeChord(chord, semitones) {
   if (!semitones) return chord;
-  // Match root note + optional bass note (e.g. G/B)
-  return chord.replace(/[A-G][#b]?/g, (note, offset) => {
-    const arr   = note.includes("b") ? NOTES_FLAT : NOTES_SHARP;
-    const idx   = arr.indexOf(note);
+  return chord.replace(/[A-G][#b]?/g, note => {
+    const arr    = note.includes("b") ? NOTES_FLAT : NOTES_SHARP;
+    const idx    = arr.indexOf(note);
     if (idx === -1) return note;
     const newIdx = ((idx + semitones) % 12 + 12) % 12;
     return arr[newIdx];
   });
+}
+
+// Apply transposition to a full plain-text chord sheet
+// Replaces chord tokens (A-G + optional # or b + optional suffix)
+// without touching lyric words that start with those letters
+function applyTransposeToSheet(text, semitones) {
+  if (!semitones) return text;
+  // Split into lines; on "chord lines" (lines where most tokens are chords), transpose
+  const chordToken = /^[A-G][#b]?(?:m(?:aj)?|dim|aug|sus[24]?|add)?[0-9]?(?:\/[A-G][#b]?)?$/;
+  return text.split("
+").map(line => {
+    const tokens = line.trim().split(/(\s+)/);
+    const wordTokens = tokens.filter(t => t.trim());
+    if (wordTokens.length === 0) return line;
+    const chordCount = wordTokens.filter(t => chordToken.test(t)).length;
+    // If >50% of non-space tokens look like chords, transpose the whole line
+    if (chordCount / wordTokens.length >= 0.5) {
+      return tokens.map(t =>
+        chordToken.test(t.trim()) ? transposeChord(t.trim(), semitones) + (t.endsWith(" ") ? " " : "") : t
+      ).join("");
+    }
+    return line;
+  }).join("
+");
 }
 
 function buildSectionsFromChordSheet(lines, title, artist) {
@@ -760,27 +796,59 @@ function parseUltimateGuitarPage(html, title, artist) {
   const dataMatch = html.match(/class="js-store"[^>]*data-content="([^"]+)"/);
   if (!dataMatch) throw new Error("UG: no data en página");
 
-  const json = JSON.parse(dataMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
-  const content = json?.store?.page?.data?.tab_view?.wiki_tab?.content
-               || json?.store?.page?.data?.tab?.content;
-  if (!content) throw new Error("UG: sin contenido de acordes");
+  let json;
+  try {
+    const raw = dataMatch[1]
+      .replace(/&quot;/g, '"')
+      .replace(/&amp;/g, '&')
+      .replace(/&#039;/g, "'")
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>');
+    json = JSON.parse(raw);
+  } catch(e) { throw new Error("UG: JSON inválido - " + e.message); }
 
-  // UG uses [ch]Am[/ch] for chords and [tab]...[/tab] for tabs
-  // Strip tab sections, convert [ch]X[/ch] → X
-  const text = content
-    .replace(/\[tab\][\s\S]*?\[\/tab\]/gi, "")
-    .replace(/\[ch\]([^\[]+)\[\/ch\]/gi, "$1")
-    .replace(/\[verse[^\]]*\]/gi, "── Verso ──")
-    .replace(/\[chorus[^\]]*\]/gi, "── Coro ──")
-    .replace(/\[bridge[^\]]*\]/gi, "── Puente ──")
-    .replace(/\[intro[^\]]*\]/gi, "── Intro ──")
-    .replace(/\[outro[^\]]*\]/gi, "── Outro ──")
-    .replace(/\[[^\]]+\]/gi, "")
+  const content = json?.store?.page?.data?.tab_view?.wiki_tab?.content
+               || json?.store?.page?.data?.tab?.content
+               || json?.store?.page?.data?.tab_view?.tab?.content;
+  if (!content) {
+    console.log("[UG] available keys:", JSON.stringify(Object.keys(json?.store?.page?.data || {})));
+    throw new Error("UG: sin contenido de acordes");
+  }
+  console.log("[UG] raw content sample:", content.slice(0, 300));
+
+  const sectionMap = {
+    verse: "── Verso", chorus: "── Coro", bridge: "── Puente",
+    intro: "── Intro", outro: "── Outro", "pre-chorus": "── Pre-Coro",
+    interlude: "── Interludio", solo: "── Solo",
+  };
+
+  let text = content
+    .replace(/\[([a-z_\- ]+?)(?::\s*[^\]]*)?]/gi, (_, tag) => {
+      const key = tag.toLowerCase().trim();
+      return "
+" + (sectionMap[key] || ("── " + tag)) + " ──
+";
+    })
+    .replace(/\[ch]([^\[]*?)\[\/ch]/gi, "$1")
+    .replace(/\[tab]([\s\S]*?)\[\/tab]/gi, (_, inner) => {
+      // Remove guitar diagram lines (e|--- b|--- etc)
+      return inner.split("
+")
+        .filter(l => !/^\s*[eEbBgGdDaA]\|/.test(l) && !/^[-|]+$/.test(l.trim()))
+        .join("
+");
+    })
+    .replace(/\[[^\]]*]/gi, "")
+    .replace(/
+{3,}/g, "
+
+")
     .trim();
 
-  if (!text) throw new Error("UG: contenido vacío tras parsear");
+  if (!text || text.length < 20) throw new Error("UG: contenido vacío");
   return { type: "text", content: text, source: "Ultimate Guitar" };
 }
+
 
 // ── Main orchestrator ─────────────────────────────────────────
 async function fetchChordsForTrack(track, trackKey) {
@@ -792,6 +860,8 @@ async function fetchChordsForTrack(track, trackKey) {
   state.chordsData = null;
   state.chordsSources = [];
   state.chordsSourceIdx = 0;
+  state.transpose = 0;
+  if (el.transposeLabel) el.transposeLabel.textContent = '0';
   if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando acordes…";
   renderChords();
 
@@ -867,38 +937,51 @@ function startProgressLoop() {
   state.progressTimer = window.setInterval(() => {
     updateProgressDisplay();
     renderSyncLabel();
-    updateTeleprompter();
   }, 500);
+  // Teleprompter runs on RAF for buttery smooth scrolling
+  startTeleprompterRAF();
 }
 
-// ─── Teleprompter ─────────────────────────────────────────────
-function updateTeleprompter() {
+// ─── Teleprompter (RAF loop) ───────────────────────────────────
+function startTeleprompterRAF() {
+  if (state.scroll._rafId) cancelAnimationFrame(state.scroll._rafId);
+
+  function tick() {
+    teleprompterFrame();
+    state.scroll._rafId = requestAnimationFrame(tick);
+  }
+  state.scroll._rafId = requestAnimationFrame(tick);
+}
+
+function teleprompterFrame() {
   const track = state.currentTrack;
   if (!track || !state.chordsData || state.scroll.userPaused) return;
 
   const sections = el.chordsSections;
   if (!sections) return;
 
-  // Use window scroll — sections element top + its full height = scroll range
-  const rect      = sections.getBoundingClientRect();
-  const absTop    = window.scrollY + rect.top;
-  const absBottom = absTop + sections.scrollHeight;
-  const scrollable = absBottom - window.innerHeight;
+  const rect       = sections.getBoundingClientRect();
+  const absTop     = window.scrollY + rect.top;
+  const scrollable = absTop + sections.scrollHeight - window.innerHeight;
   if (scrollable <= 10) return;
 
   const progressMs = computeProgressMs();
   const durationMs = track.durationMs || 1;
+  const ratio      = Math.min((progressMs / durationMs) * state.scroll.speed, 1);
 
-  const ratio = Math.min((progressMs / durationMs) * state.scroll.speed, 1);
-  const target = Math.round(absTop + ratio * (scrollable - absTop));
-
+  // Target: scroll until sections bottom hits viewport bottom
+  const target  = Math.round(absTop + ratio * (scrollable - absTop));
   const current = window.scrollY;
   const diff    = target - current;
-  if (Math.abs(diff) < 1) return;
+
+  // Very gentle ease: 2% per frame at 60fps ≈ imperceptible movement
+  if (Math.abs(diff) < 0.5) return;
+  const step = diff * 0.02;
 
   state.scroll._programmatic = true;
-  window.scrollTo({ top: current + diff * 0.1, behavior: "instant" });
-  requestAnimationFrame(() => { state.scroll._programmatic = false; });
+  window.scrollTo({ top: current + step, behavior: "instant" });
+  // Clear flag after paint so manual scroll detection works
+  setTimeout(() => { state.scroll._programmatic = false; }, 50);
 }
 
 function updateScrollUI() {
@@ -1038,10 +1121,13 @@ function renderChords() {
     return;
   }
 
-  // ── Plain-text chord sheet from Groq ──
+  // ── Plain-text chord sheet ──
   if (data.type === "text") {
     if (el.chordsSections) {
-      el.chordsSections.innerHTML = `<pre class="chord-sheet-pre">${escapeHtml(data.content)}</pre>`;
+      const displayed = state.transpose
+        ? applyTransposeToSheet(data.content, state.transpose)
+        : data.content;
+      el.chordsSections.innerHTML = `<pre class="chord-sheet-pre">${escapeHtml(displayed)}</pre>`;
     }
     return;
   }
