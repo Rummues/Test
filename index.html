@@ -159,23 +159,37 @@
     .source-btn:hover { background: rgba(255,255,255,0.13); }
     .source-btn.active { border-color: var(--accent-1); color: var(--accent-1); }
 
-    /* Teleprompter scroll controls — sticky: stays put until scrolled past, then follows */
+    /* Teleprompter scroll controls — normal flow by default */
     .scroll-controls {
-      display: none; /* JS sets to flex when chords load */
+      display: none;
       align-items: center;
       gap: 6px;
       flex-wrap: wrap;
-      position: sticky;
-      top: 8px;
-      z-index: 200;
-      background: rgba(13, 17, 23, 0.94);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
       border-radius: 20px;
       padding: 10px 14px;
       border: 1px solid rgba(255,255,255,0.12);
+      background: rgba(13, 17, 23, 0.94);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
       box-shadow: 0 8px 32px rgba(0,0,0,0.5);
       margin-bottom: 12px;
+      box-sizing: border-box;
+    }
+    /* When JS detects it's been scrolled past, pin it to top */
+    .scroll-controls.is-pinned {
+      position: fixed;
+      top: 8px;
+      left: 0;
+      right: 0;
+      margin: 0 auto;
+      width: calc(100% - 32px);
+      max-width: 700px;
+      z-index: 200;
+      margin-bottom: 0;
+    }
+    /* Placeholder to prevent layout jump when pinned */
+    .scroll-controls-placeholder {
+      display: none;
     }
     .scroll-btn {
       background: rgba(255,255,255,0.07);
@@ -386,10 +400,9 @@
 
           <div class="chords-chips-row" id="chords-chips-row"></div>
 
-          <!-- Teleprompter + Transpose controls -->
           <div class="scroll-controls" id="scroll-controls" style="display:none">
             <button class="scroll-btn" id="scroll-slower" title="Scroll más lento">−</button>
-            <button class="scroll-btn scroll-btn-toggle" id="scroll-toggle" title="Pausar/reanudar scroll">⏸ Auto</button>
+            <button class="scroll-btn scroll-btn-toggle" id="scroll-toggle" title="Pausar/reanudar scroll">▶ Auto</button>
             <button class="scroll-btn" id="scroll-faster" title="Scroll más rápido">+</button>
             <span class="scroll-speed-label" id="scroll-speed-label">1×</span>
             <span style="width:1px;background:var(--line);height:22px;margin:0 4px;display:inline-block"></span>
@@ -399,6 +412,7 @@
             <span style="width:1px;background:var(--line);height:22px;margin:0 4px;display:inline-block"></span>
             <button class="scroll-btn" id="enharmonic-btn" title="Convertir bemoles↔sostenidos (Bb siempre se mantiene)">♭↔♯</button>
           </div>
+          <div class="scroll-controls-placeholder" id="scroll-controls-placeholder"></div>
 
           <div id="chords-sections">
             <div class="chords-placeholder" id="chords-status-text">
