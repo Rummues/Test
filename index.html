@@ -159,14 +159,14 @@
     .source-btn:hover { background: rgba(255,255,255,0.13); }
     .source-btn.active { border-color: var(--accent-1); color: var(--accent-1); }
 
-    /* Teleprompter scroll controls — fixed floating bar */
+    /* Teleprompter scroll controls — fixed at TOP */
     .scroll-controls {
       display: none; /* shown via JS as flex */
       align-items: center;
       gap: 6px;
       flex-wrap: wrap;
       position: fixed;
-      bottom: 80px;
+      top: 8px;
       left: 50%;
       transform: translateX(-50%);
       z-index: 200;
