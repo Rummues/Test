@@ -2,6 +2,11 @@
 //  Spotify Chords Board  ·  app.js
 // ─────────────────────────────────────────────────────────────
 
+// ── CONFIGURACIÓN — edita estos dos valores ──────────────────
+const HARDCODED_CLIENT_ID  = "e15aaea6bb3349d2a828a01b208ab014";
+const HARDCODED_WORKER_URL = "https://test.millervicente.workers.dev";
+// ─────────────────────────────────────────────────────────────
+
 const STORAGE_KEYS = {
   settings: "spotify-chords.settings.v5",
   tokens:   "spotify-chords.tokens.v5"
@@ -10,13 +15,17 @@ const STORAGE_KEYS = {
 const SPOTIFY_SCOPES = ["user-read-currently-playing", "user-read-playback-state"];
 
 const state = {
-  settings: { clientId: "", redirectUri: "", workerUrl: "" },
+  settings: {
+    clientId:    HARDCODED_CLIENT_ID,
+    redirectUri: "",
+    workerUrl:   HARDCODED_WORKER_URL
+  },
   tokens: null,
   currentTrack: null,
   authTone: "muted",   authText: "Sin conectar",
   playbackTone: "muted", playbackText: "Esperando",
   lyricsTone: "muted", lyricsText: "Esperando",
-  lyricsBody: "La letra aparecerá aquí cuando Spotify reporte una canción activa.",
+  lyricsBody: "",
   lyricsSourceUrl: "",
   chordsTone: "muted", chordsText: "Esperando",
   chordsData: null,
@@ -24,12 +33,22 @@ const state = {
   lastSyncAt: 0,
   pollTimer: null,
   progressTimer: null,
-  scroll: { speed: 1.0, userPaused: true, _rafId: null, _lastTime: null, _expectedY: null },
+  scroll: { speed: 1.0, userPaused: true, _rafId: null, _lastTime: null, _acc: 0 },
   transpose: 0,
   enharmonic: false
 };
 
 const el = {};
+
+// Settings panel open/close (gear button)
+function openSettings() {
+  document.getElementById("settings-panel").classList.add("open");
+  document.getElementById("settings-overlay").style.display = "block";
+}
+function closeSettings() {
+  document.getElementById("settings-panel").classList.remove("open");
+  document.getElementById("settings-overlay").style.display = "none";
+}
 
 document.addEventListener("DOMContentLoaded", boot);
 
@@ -145,34 +164,9 @@ function bindEvents() {
 
   // JS-driven sticky for scroll-controls + FAB visibility
   const fab = document.getElementById("scroll-top-fab");
-  const placeholder = document.getElementById("scroll-controls-placeholder");
 
   window.addEventListener("scroll", () => {
-    // FAB
     if (fab) fab.classList.toggle("visible", window.scrollY > 300);
-
-    // Sticky scroll-controls
-    const ctrl = el.scrollControls;
-    if (!ctrl || ctrl.style.display === "none") return;
-
-    if (ctrl.classList.contains("is-pinned")) {
-      // Already pinned — unpin if we've scrolled back above origin
-      const originTop = parseFloat(placeholder.dataset.originTop || "0");
-      if (window.scrollY < originTop - 8) {
-        ctrl.classList.remove("is-pinned");
-        placeholder.style.display = "none";
-      }
-    } else {
-      // Not pinned — pin if top of element has reached viewport top
-      const rect = ctrl.getBoundingClientRect();
-      if (rect.top <= 8) {
-        // Save origin position and height for placeholder
-        placeholder.dataset.originTop = String(window.scrollY + rect.top);
-        placeholder.style.display = "block";
-        placeholder.style.height  = ctrl.offsetHeight + "px";
-        ctrl.classList.add("is-pinned");
-      }
-    }
   }, { passive: true });
 
   if (fab) {
@@ -185,14 +179,9 @@ function bindEvents() {
 }
 
 function hydrateState() {
-  try {
-    const s = JSON.parse(localStorage.getItem(STORAGE_KEYS.settings) || "null");
-    if (s) {
-      if (typeof s.clientId === "string") state.settings.clientId = s.clientId;
-      if (typeof s.redirectUri === "string") state.settings.redirectUri = s.redirectUri;
-      if (typeof s.workerUrl === "string") state.settings.workerUrl = s.workerUrl;
-    }
-  } catch (_) {}
+  // Always use hardcoded credentials — never overwrite from localStorage
+  state.settings.clientId  = HARDCODED_CLIENT_ID;
+  state.settings.workerUrl = HARDCODED_WORKER_URL;
   try {
     const t = JSON.parse(localStorage.getItem(STORAGE_KEYS.tokens) || "null");
     if (t && t.accessToken) {
@@ -1123,14 +1112,7 @@ function updateScrollUI() {
 }
 
 function showScrollControls(visible) {
-  if (el.scrollControls) {
-    el.scrollControls.style.display = visible ? "flex" : "none";
-    if (!visible) {
-      el.scrollControls.classList.remove("is-pinned");
-      const ph = document.getElementById("scroll-controls-placeholder");
-      if (ph) ph.style.display = "none";
-    }
-  }
+  if (el.scrollControls) el.scrollControls.style.display = visible ? "flex" : "none";
 }
 
 // ─── Render ───────────────────────────────────────────────────
@@ -1143,14 +1125,15 @@ function renderAll() {
 }
 
 function renderSetup() {
-  el.spotifyClientId.value  = state.settings.clientId;
-  if (el.workerUrl) el.workerUrl.value = state.settings.workerUrl || "";
-  el.redirectUri.value     = getRedirectUri() || state.settings.redirectUri;
-  el.authStatusPill.className   = `status-pill ${pillClassForTone(state.authTone)}`;
-  el.authStatusPill.textContent = state.authText;
-  el.authHelper.textContent = getRedirectUri()
-    ? "Usa exactamente esta Redirect URI en Spotify. Si cambias el nombre del repo, actualiza también esa URL."
-    : "Cuando publiques en GitHub Pages, aquí aparecerá la URL exacta para registrar en Spotify.";
+  if (el.authStatusPill) {
+    el.authStatusPill.className   = `status-pill ${pillClassForTone(state.authTone)}`;
+    el.authStatusPill.textContent = state.authText;
+  }
+  if (el.authHelper) {
+    el.authHelper.textContent = getRedirectUri()
+      ? `Redirect URI: ${getRedirectUri()}`
+      : "Publica en GitHub Pages para obtener la Redirect URI.";
+  }
 }
 
 function renderNowPlaying() {
