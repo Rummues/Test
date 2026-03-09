@@ -46,6 +46,7 @@ function cacheElements() {
   const ids = [
     "spotify-client-id", "worker-url", "redirect-uri",
   "scroll-controls", "scroll-toggle", "scroll-slower", "scroll-faster", "scroll-speed-label",
+  "source-switcher",
     "copy-url-btn", "connect-btn", "disconnect-btn",
     "auth-status-pill", "auth-helper",
     "playback-pill", "cover-art",
@@ -93,8 +94,22 @@ function bindEvents() {
     state.scroll.userPaused = false;
     updateScrollUI();
   });
-  // Pause auto-scroll if user manually scrolls
-  el.chordsSections?.addEventListener("scroll", () => {
+  // Source switcher delegation
+  el.sourceSwitcher?.addEventListener("click", e => {
+    const btn = e.target.closest("[data-src-idx]");
+    if (!btn) return;
+    const idx = parseInt(btn.dataset.srcIdx, 10);
+    if (!isNaN(idx) && state.chordsSources[idx]) {
+      state.chordsSourceIdx = idx;
+      state.chordsData = state.chordsSources[idx];
+      renderChords();
+      renderSourceSwitcher();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  });
+
+  // Pause auto-scroll if user manually scrolls the window
+  window.addEventListener("scroll", () => {
     if (state.scroll._programmatic) return;
     state.scroll.userPaused = true;
     updateScrollUI();
@@ -539,7 +554,8 @@ async function fetchHtmlViaWorker(targetUrl) {
 }
 
 function parseCifraclubPage(html, title, artist) {
-  // ── Try __NEXT_DATA__ first — contains keyboard-specific chord data ──
+  // ── Read __NEXT_DATA__ to get keyboard transposition value ──
+  let semitones = 0;
   const nextMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
   if (nextMatch) {
     try {
@@ -547,32 +563,18 @@ function parseCifraclubPage(html, title, artist) {
       const pageProps = data?.props?.pageProps || {};
       console.log("[Cifraclub song] nextData keys:", Object.keys(pageProps));
 
-      // Cifraclub stores instrument versions inside the cifra object
       const cifra = pageProps.cifra || pageProps.song || pageProps.data?.cifra;
       if (cifra) {
         console.log("[Cifraclub song] cifra keys:", Object.keys(cifra));
-
-        // Try to get keyboard-specific content
-        const instruments = cifra.instruments || cifra.versions || cifra.cifras;
-        if (Array.isArray(instruments)) {
-          const keyboard = instruments.find(i =>
-            (i.instrument || i.name || "").toLowerCase().includes("teclado") ||
-            (i.instrument || i.name || "").toLowerCase().includes("keyboard") ||
-            (i.instrument || i.name || "").toLowerCase().includes("piano")
-          );
-          const target = keyboard || instruments[0];
-          if (target?.content || target?.text || target?.body) {
-            const text = target.content || target.text || target.body;
-            console.log("[Cifraclub song] got keyboard content from JSON, length:", text.length);
-            return { type: "text", content: text.trim() };
-          }
-        }
-
-        // Sometimes chord content is directly on the cifra object
-        if (cifra.content || cifra.text) {
-          const text = cifra.content || cifra.text;
-          console.log("[Cifraclub song] got content from cifra object, length:", text.length);
-          return { type: "text", content: text.trim() };
+        // tom = guitar key semitone offset, tom_teclado = keyboard semitone offset
+        const tomGuitarra = cifra.tom ?? cifra.tom_guitarra ?? 0;
+        const tomTeclado  = cifra.tom_teclado ?? cifra.tomTeclado ?? null;
+        // If keyboard tone is explicitly given, calculate difference
+        if (tomTeclado !== null) {
+          semitones = tomTeclado - tomGuitarra;
+          console.log("[Cifraclub song] guitar tom:", tomGuitarra, "keyboard tom:", tomTeclado, "→ transpose:", semitones);
+        } else {
+          console.log("[Cifraclub song] no tom_teclado found, cifra:", JSON.stringify(cifra).slice(0, 400));
         }
       }
     } catch (e) {
@@ -580,38 +582,50 @@ function parseCifraclubPage(html, title, artist) {
     }
   }
 
-  // ── Fallback: parse the <pre> tag (guitar chords, but better than nothing) ──
+  // ── Parse the <pre> tag (guitar chords) ──
   const clean = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "");
 
   const preMatch = clean.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
-  console.log("[Cifraclub] pre tag found:", !!preMatch, "html length:", clean.length);
+  console.log("[Cifraclub] pre tag found:", !!preMatch);
   if (!preMatch) {
-    console.log("[Cifraclub] html sample:", clean.slice(0, 1000));
+    console.log("[Cifraclub] html sample:", clean.slice(0, 500));
     return null;
   }
 
   const raw = preMatch[1];
-  console.log("[Cifraclub] pre content length:", raw.length, "sample:", raw.slice(0, 200));
-
   const chordPattern = /<b>([A-G][#b]?(?:m(?:aj)?|dim|aug|sus[24]?|add)?(?:[0-9])?(?:\/[A-G][#b]?)?)<\/b>/g;
   const allChords = [...raw.matchAll(chordPattern)].map(m => m[1]);
-  console.log("[Cifraclub] chords found:", allChords.length, allChords.slice(0, 10));
-  if (allChords.length < 2) {
-    console.log("[Cifraclub] raw pre sample:", raw.slice(0, 500));
-    return null;
-  }
+  console.log("[Cifraclub] chords found:", allChords.length, "transpose semitones:", semitones);
+  if (allChords.length < 2) return null;
 
-  const sheetText = raw
-    .replace(/<b>([^<]+)<\/b>/g, "$1")
+  // ── Convert to plain text, applying transposition if needed ──
+  let sheetText = raw
+    .replace(/<b>([^<]+)<\/b>/g, (_, chord) => transposeChord(chord, semitones))
     .replace(/<[^>]+>/g, "")
     .replace(/&amp;/g, "&").replace(/&nbsp;/g, " ")
     .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
     .replace(/&#[0-9]+;/g, "")
     .trim();
 
-  return { type: "text", content: sheetText };
+  return { type: "text", content: sheetText, source: "Cifraclub" };
+}
+
+// ── Chord transposition engine ────────────────────────────────
+const NOTES_SHARP = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+const NOTES_FLAT  = ["C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"];
+
+function transposeChord(chord, semitones) {
+  if (!semitones) return chord;
+  // Match root note + optional bass note (e.g. G/B)
+  return chord.replace(/[A-G][#b]?/g, (note, offset) => {
+    const arr   = note.includes("b") ? NOTES_FLAT : NOTES_SHARP;
+    const idx   = arr.indexOf(note);
+    if (idx === -1) return note;
+    const newIdx = ((idx + semitones) % 12 + 12) % 12;
+    return arr[newIdx];
+  });
 }
 
 function buildSectionsFromChordSheet(lines, title, artist) {
@@ -711,6 +725,63 @@ async function fetchChordsViaEChords(title, artist) {
   return { type: "text", content: sheetText };
 }
 
+// ── Ultimate Guitar scrape ────────────────────────────────────
+async function fetchChordsViaUltimateGuitar(title, artist) {
+  const q = encodeURIComponent(`${artist} ${title}`);
+  const searchHtml = await fetchHtmlViaWorker(
+    `https://es.ultimate-guitar.com/search.php?search_type=title&value=${q}`
+  );
+  if (!searchHtml) throw new Error("UG: sin respuesta");
+
+  // UG stores data in a div with data-content JSON
+  const dataMatch = searchHtml.match(/class="js-store"[^>]*data-content="([^"]+)"/);
+  if (!dataMatch) throw new Error("UG: no data-content");
+
+  const json = JSON.parse(dataMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+  const results = json?.store?.page?.data?.results || [];
+  console.log("[UG] results count:", results.length);
+
+  // Find first chords result (not tab/bass/drum)
+  const chord = results.find(r =>
+    r.type === "Chords" &&
+    r.artist_name?.toLowerCase().includes(artist.toLowerCase().split(" ")[0])
+  ) || results.find(r => r.type === "Chords");
+
+  if (!chord?.tab_url) throw new Error("UG: sin acordes");
+  console.log("[UG] chord page:", chord.tab_url);
+
+  const pageHtml = await fetchHtmlViaWorker(chord.tab_url);
+  if (!pageHtml) throw new Error("UG: sin respuesta en página");
+
+  return parseUltimateGuitarPage(pageHtml, title, artist);
+}
+
+function parseUltimateGuitarPage(html, title, artist) {
+  const dataMatch = html.match(/class="js-store"[^>]*data-content="([^"]+)"/);
+  if (!dataMatch) throw new Error("UG: no data en página");
+
+  const json = JSON.parse(dataMatch[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+  const content = json?.store?.page?.data?.tab_view?.wiki_tab?.content
+               || json?.store?.page?.data?.tab?.content;
+  if (!content) throw new Error("UG: sin contenido de acordes");
+
+  // UG uses [ch]Am[/ch] for chords and [tab]...[/tab] for tabs
+  // Strip tab sections, convert [ch]X[/ch] → X
+  const text = content
+    .replace(/\[tab\][\s\S]*?\[\/tab\]/gi, "")
+    .replace(/\[ch\]([^\[]+)\[\/ch\]/gi, "$1")
+    .replace(/\[verse[^\]]*\]/gi, "── Verso ──")
+    .replace(/\[chorus[^\]]*\]/gi, "── Coro ──")
+    .replace(/\[bridge[^\]]*\]/gi, "── Puente ──")
+    .replace(/\[intro[^\]]*\]/gi, "── Intro ──")
+    .replace(/\[outro[^\]]*\]/gi, "── Outro ──")
+    .replace(/\[[^\]]+\]/gi, "")
+    .trim();
+
+  if (!text) throw new Error("UG: contenido vacío tras parsear");
+  return { type: "text", content: text, source: "Ultimate Guitar" };
+}
+
 // ── Main orchestrator ─────────────────────────────────────────
 async function fetchChordsForTrack(track, trackKey) {
   const title  = cleanTrackLookupText(track.name);
@@ -719,6 +790,8 @@ async function fetchChordsForTrack(track, trackKey) {
   state.chordsTone = "warn";
   state.chordsText = "Buscando…";
   state.chordsData = null;
+  state.chordsSources = [];
+  state.chordsSourceIdx = 0;
   if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando acordes…";
   renderChords();
 
@@ -730,48 +803,48 @@ async function fetchChordsForTrack(track, trackKey) {
     return;
   }
 
-  let chordData = null;
-  const log = [];
+  const sources = [
+    { name: "Cifraclub",       fn: () => fetchChordsViaCifraclub(title, artist) },
+    { name: "Ultimate Guitar", fn: () => fetchChordsViaUltimateGuitar(title, artist) },
+    { name: "E-Chords",        fn: () => fetchChordsViaEChords(title, artist) },
+  ];
 
-  // 1 · Cifraclub (mejor base de datos, especialmente español/latino)
-  try {
-    if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando en Cifraclub…";
-    chordData = await fetchChordsViaCifraclub(title, artist);
-    if (chordData) log.push("✓ Cifraclub");
-    else log.push("✗ Cifraclub: no encontrado");
-  } catch (e) { log.push(`✗ Cifraclub: ${e.message}`); }
-
-  if (trackKey !== state.lastTrackKey) return;
-
-  // 2 · E-Chords (fallback, fuerte en pop/rock inglés)
-  if (!chordData) {
+  const found = [];
+  for (const src of sources) {
+    if (trackKey !== state.lastTrackKey) return;
     try {
-      if (el.chordsStatusText) el.chordsStatusText.textContent = "Buscando en E-Chords…";
-      chordData = await fetchChordsViaEChords(title, artist);
-      if (chordData) log.push("✓ E-Chords");
-      else log.push("✗ E-Chords: no encontrado");
-    } catch (e) { log.push(`✗ E-Chords: ${e.message}`); }
+      if (el.chordsStatusText) el.chordsStatusText.textContent = `Buscando en ${src.name}…`;
+      const result = await src.fn();
+      if (result) {
+        result.source = result.source || src.name;
+        found.push(result);
+        console.log(`✓ ${src.name}`);
+      }
+    } catch (e) { console.log(`✗ ${src.name}: ${e.message}`); }
   }
 
   if (trackKey !== state.lastTrackKey) return;
 
-  if (chordData) {
-    state.chordsTone = "live";
-    state.chordsText = "Encontrados";
-    state.chordsData = chordData;
+  if (found.length > 0) {
+    state.chordsTone   = "live";
+    state.chordsText   = "Encontrados";
+    state.chordsData   = found[0];
+    state.chordsSources = found;
+    state.chordsSourceIdx = 0;
     showScrollControls(true);
   } else {
     state.chordsTone = "warn";
     state.chordsText = "No encontrados";
     state.chordsData = null;
+    state.chordsSources = [];
     showScrollControls(false);
     if (el.chordsStatusText) {
-      el.chordsStatusText.textContent =
-        "No encontrado automáticamente — usa los links de búsqueda abajo. " + log.join(" · ");
+      el.chordsStatusText.textContent = "No encontrado automáticamente — usa los links de búsqueda abajo.";
     }
   }
 
   renderChords();
+  renderSourceSwitcher();
 }
 
 function parseChordJSON(raw) {
@@ -803,27 +876,28 @@ function updateTeleprompter() {
   const track = state.currentTrack;
   if (!track || !state.chordsData || state.scroll.userPaused) return;
 
-  const el_sections = el.chordsSections;
-  if (!el_sections) return;
+  const sections = el.chordsSections;
+  if (!sections) return;
 
-  const scrollable = el_sections.scrollHeight - el_sections.clientHeight;
-  if (scrollable <= 0) return;
+  // Use window scroll — sections element top + its full height = scroll range
+  const rect      = sections.getBoundingClientRect();
+  const absTop    = window.scrollY + rect.top;
+  const absBottom = absTop + sections.scrollHeight;
+  const scrollable = absBottom - window.innerHeight;
+  if (scrollable <= 10) return;
 
   const progressMs = computeProgressMs();
   const durationMs = track.durationMs || 1;
 
-  // Map song progress to scroll position, adjusted by speed multiplier
-  // speed=1 → scroll ends at song end; speed=2 → scroll ends at 50% of song
   const ratio = Math.min((progressMs / durationMs) * state.scroll.speed, 1);
-  const targetScrollTop = Math.round(ratio * scrollable);
+  const target = Math.round(absTop + ratio * (scrollable - absTop));
 
-  // Smooth scroll toward target
-  const current = el_sections.scrollTop;
-  const diff = targetScrollTop - current;
-  if (Math.abs(diff) < 2) return;
+  const current = window.scrollY;
+  const diff    = target - current;
+  if (Math.abs(diff) < 1) return;
 
   state.scroll._programmatic = true;
-  el_sections.scrollTop = current + diff * 0.08; // ease toward target
+  window.scrollTo({ top: current + diff * 0.1, behavior: "instant" });
   requestAnimationFrame(() => { state.scroll._programmatic = false; });
 }
 
@@ -926,6 +1000,22 @@ function renderLyrics() {
 }
 
 // ─── Chords Render ────────────────────────────────────────────
+function renderSourceSwitcher() {
+  if (!el.sourceSwitcher) return;
+  const sources = state.chordsSources || [];
+  if (sources.length <= 1) {
+    el.sourceSwitcher.style.display = "none";
+    el.sourceSwitcher.innerHTML = "";
+    return;
+  }
+  el.sourceSwitcher.style.display = "flex";
+  el.sourceSwitcher.innerHTML = sources.map((s, i) =>
+    `<button class="source-btn${i === state.chordsSourceIdx ? " active" : ""}" data-src-idx="${i}">
+      ${escapeHtml(s.source || "Fuente " + (i+1))}
+    </button>`
+  ).join("");
+}
+
 function renderChords() {
   if (!el.chordsPill) return;
 
