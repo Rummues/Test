@@ -159,23 +159,25 @@
     .source-btn:hover { background: rgba(255,255,255,0.13); }
     .source-btn.active { border-color: var(--accent-1); color: var(--accent-1); }
 
-    /* Teleprompter scroll controls — sticky/floating */
+    /* Teleprompter scroll controls — fixed floating bar */
     .scroll-controls {
-      display: flex;
+      display: none; /* shown via JS as flex */
       align-items: center;
       gap: 6px;
       flex-wrap: wrap;
-      position: sticky;
-      top: 8px;
-      z-index: 100;
-      background: rgba(13, 17, 23, 0.92);
-      backdrop-filter: blur(12px);
-      -webkit-backdrop-filter: blur(12px);
-      border-radius: 16px;
-      padding: 8px 12px;
-      border: 1px solid rgba(255,255,255,0.1);
-      margin-bottom: 12px;
-      box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+      position: fixed;
+      bottom: 80px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 200;
+      background: rgba(13, 17, 23, 0.94);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
+      border-radius: 20px;
+      padding: 10px 14px;
+      border: 1px solid rgba(255,255,255,0.12);
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      white-space: nowrap;
     }
     .scroll-btn {
       background: rgba(255,255,255,0.07);
@@ -414,7 +416,7 @@
     </div>
   </div>
   <!-- Scroll to top FAB -->
-  <button id="scroll-top-fab" aria-label="Volver al inicio" title="Volver al inicio" onclick="window.scrollTo({top:0,behavior:'smooth'})">↑</button>
+  <button id="scroll-top-fab" aria-label="Volver al inicio" title="Volver al inicio">↑</button>
 
   <script src="./app.js" defer></script>
 </body>
