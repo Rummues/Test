@@ -654,7 +654,16 @@ function transposeChord(chord, semitones) {
   });
 }
 
-// Apply transposition to a full plain-text chord sheet
+// Wrap chord tokens in <span class="chord"> for color highlighting
+// Only applied after escapeHtml so we work on the safe string
+function highlightChords(safeText) {
+  // Chord pattern as a word: A-G + optional #/b + optional suffix + optional /bass
+  // Must be surrounded by spaces, line start/end, or punctuation — not inside words
+  return safeText.replace(
+    /(?<![A-Za-z])([A-G][#b]?(?:maj|min|m|dim|aug|sus[24]?|add)?[0-9]?(?:\/[A-G][#b]?)?)(?![A-Za-z])/g,
+    '<span class="chord">$1</span>'
+  );
+}
 // Replaces chord tokens (A-G + optional # or b + optional suffix)
 // without touching lyric words that start with those letters
 function applyTransposeToSheet(text, semitones) {
@@ -851,6 +860,32 @@ function parseUltimateGuitarPage(html, title, artist) {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
+  // Detect capo from content header lines like "Capo 1st fret" or "Capo: 2"
+  let ugSemitones = 0;
+  const capoLine = text.match(/[Cc]apo[:\s]+(\d+)(?:st|nd|rd|th)?\s*(?:fret|traste)?/i);
+  if (capoLine) {
+    ugSemitones = parseInt(capoLine[1], 10);
+    console.log("[UG] capo detected:", ugSemitones);
+  }
+  // Also detect "Tuning: E A D G B E  Capo: 1st fret" format
+  const tuningCapo = text.match(/[Cc]apo[:\s]+(\d+)/i);
+  if (!ugSemitones && tuningCapo) {
+    ugSemitones = parseInt(tuningCapo[1], 10);
+    console.log("[UG] tuning-line capo detected:", ugSemitones);
+  }
+
+  if (ugSemitones) {
+    // Strip chord diagram lines (X - XXXXXX) before transposing
+    const lines = text.split("\n");
+    const transposed = lines.map(line => {
+      // Diagram lines: "Am - x02210" or "G   - 32000x" — skip transposing those
+      if (/^[A-G][#b]?[\w\/]*\s*-\s*[x\d]+/i.test(line.trim())) return line;
+      return applyTransposeToSheet(line, ugSemitones);
+    });
+    text = transposed.join("\n");
+    text = `[Capo ${ugSemitones} — acordes transpuestos automáticamente]\n\n` + text;
+  }
+
   if (!text || text.length < 20) throw new Error("UG: contenido vacío");
   return { type: "text", content: text, source: "Ultimate Guitar" };
 }
@@ -947,49 +982,46 @@ function startProgressLoop() {
   startTeleprompterLoop();
 }
 
-// ─── Teleprompter ──────────────────────────────────────────────
-// Simple approach: every 100ms, calculate where we should be
-// based on song progress and smoothly move 1px at a time toward it
+// ─── Teleprompter — RAF-based, truly smooth ───────────────────
+// Strategy: instead of chasing a target position, we scroll at a
+// constant px/sec rate derived from content height ÷ song duration.
+// Speed multiplier directly scales px/sec. Dead simple, butter smooth.
 function startTeleprompterLoop() {
-  if (state.scroll._timer) clearInterval(state.scroll._timer);
-  state.scroll._timer = setInterval(teleprompterTick, 100);
-}
+  if (state.scroll._rafId) cancelAnimationFrame(state.scroll._rafId);
+  state.scroll._lastTime = null;
 
-function teleprompterTick() {
-  if (state.scroll.userPaused) return;
-  const track = state.currentTrack;
-  if (!track || !state.chordsData) return;
+  function tick(now) {
+    state.scroll._rafId = requestAnimationFrame(tick);
+    if (state.scroll.userPaused) return;
+    const track = state.currentTrack;
+    if (!track || !state.chordsData) return;
 
-  const sections = el.chordsSections;
-  if (!sections) return;
+    // Calculate scrollable range scoped to the chords section
+    const sections = el.chordsSections;
+    if (!sections) return;
+    const rect         = sections.getBoundingClientRect();
+    const secTop       = window.scrollY + rect.top;
+    const secScrollable = secTop + sections.scrollHeight - window.innerHeight;
+    if (secScrollable < 50) return;
 
-  const pageHeight   = document.documentElement.scrollHeight;
-  const viewHeight   = window.innerHeight;
-  const maxScroll    = pageHeight - viewHeight;
-  if (maxScroll < 50) return;
+    const durationMs = track.durationMs || 180000;
+    // px per second = total scrollable px ÷ song seconds, scaled by speed
+    const pxPerSec = (secScrollable / (durationMs / 1000)) * state.scroll.speed;
 
-  const rect        = sections.getBoundingClientRect();
-  const secTop      = window.scrollY + rect.top;
-  const secHeight   = sections.scrollHeight;
-  const secScrollable = secTop + secHeight - viewHeight;
-  if (secScrollable < 50) return;
+    // dt since last frame (capped at 100ms to avoid jumps after tab switch)
+    if (!state.scroll._lastTime) { state.scroll._lastTime = now; return; }
+    const dt = Math.min(now - state.scroll._lastTime, 100) / 1000;
+    state.scroll._lastTime = now;
 
-  const progressMs = computeProgressMs();
-  const durationMs = track.durationMs || 1;
-  const ratio = Math.min((progressMs / durationMs) * state.scroll.speed, 1);
+    const step = pxPerSec * dt;
+    if (step < 0.01) return;
 
-  const target  = Math.round(secTop + ratio * (secScrollable - secTop));
-  const current = window.scrollY;
-  const diff    = target - current;
+    state.scroll._programmatic = true;
+    window.scrollBy({ top: step, behavior: "instant" });
+    setTimeout(() => { state.scroll._programmatic = false; }, 80);
+  }
 
-  if (Math.abs(diff) < 0.5) return;
-
-  // Max 2px per tick (100ms) = 20px/sec — very gentle
-  const step = Math.sign(diff) * Math.min(Math.abs(diff), 2);
-
-  state.scroll._programmatic = true;
-  window.scrollBy({ top: step, behavior: "instant" });
-  setTimeout(() => { state.scroll._programmatic = false; }, 120);
+  requestAnimationFrame(tick);
 }
 
 function updateScrollUI() {
@@ -1094,7 +1126,7 @@ function renderLyrics() {
 function renderSourceSwitcher() {
   if (!el.sourceSwitcher) return;
   const sources = state.chordsSources || [];
-  if (sources.length <= 1) {
+  if (sources.length === 0) {
     el.sourceSwitcher.style.display = "none";
     el.sourceSwitcher.innerHTML = "";
     return;
@@ -1135,7 +1167,7 @@ function renderChords() {
       const displayed = state.transpose
         ? applyTransposeToSheet(data.content, state.transpose)
         : data.content;
-      el.chordsSections.innerHTML = `<pre class="chord-sheet-pre">${escapeHtml(displayed)}</pre>`;
+      el.chordsSections.innerHTML = `<pre class="chord-sheet-pre">${highlightChords(escapeHtml(displayed))}</pre>`;
     }
     return;
   }
