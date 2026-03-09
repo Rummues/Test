@@ -134,7 +134,6 @@ function bindEvents() {
   el.copyUrlBtn.addEventListener("click", copyRedirectUri);
   el.connectBtn.addEventListener("click", startSpotifyLogin);
   el.disconnectBtn.addEventListener("click", disconnectSpotify);
-  el.copyQueryBtn.addEventListener("click", copyPrimaryQuery);
 }
 
 function hydrateState() {
