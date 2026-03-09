@@ -143,17 +143,17 @@ function bindEvents() {
   el.connectBtn.addEventListener("click", startSpotifyLogin);
   el.disconnectBtn.addEventListener("click", disconnectSpotify);
 
-  // FAB: pause autoscroll + go to top
+  // FAB + scroll controls visibility on scroll
   const fab = document.getElementById("scroll-top-fab");
+  window.addEventListener("scroll", () => {
+    if (fab) fab.classList.toggle("visible", window.scrollY > 300);
+  }, { passive: true });
   if (fab) {
     fab.addEventListener("click", () => {
       state.scroll.userPaused = true;
       updateScrollUI();
       window.scrollTo({ top: 0, behavior: "smooth" });
     });
-    window.addEventListener("scroll", () => {
-      fab.classList.toggle("visible", window.scrollY > 300);
-    }, { passive: true });
   }
 }
 
