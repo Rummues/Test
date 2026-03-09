@@ -142,6 +142,19 @@ function bindEvents() {
   el.copyUrlBtn.addEventListener("click", copyRedirectUri);
   el.connectBtn.addEventListener("click", startSpotifyLogin);
   el.disconnectBtn.addEventListener("click", disconnectSpotify);
+
+  // FAB: pause autoscroll + go to top
+  const fab = document.getElementById("scroll-top-fab");
+  if (fab) {
+    fab.addEventListener("click", () => {
+      state.scroll.userPaused = true;
+      updateScrollUI();
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    });
+    window.addEventListener("scroll", () => {
+      fab.classList.toggle("visible", window.scrollY > 300);
+    }, { passive: true });
+  }
 }
 
 function hydrateState() {
@@ -561,7 +574,10 @@ async function fetchChordsViaCifraclub(title, artist) {
   const songHtml = await fetchHtmlViaWorker(songUrl + "?tabs=false&instrument=keyboard#tabs=false&instrument=keyboard");
   if (!songHtml || songHtml.length < 1000) throw new Error("Cifraclub: página de canción vacía");
 
-  return parseCifraclubPage(songHtml, title, artist);
+  const result = parseCifraclubPage(songHtml, title, artist);
+  if (!result) throw new Error("Cifraclub: no se encontraron acordes en la página");
+  result.url = songUrl;
+  return result;
 }
 
 async function fetchHtmlViaWorker(targetUrl) {
@@ -650,7 +666,7 @@ function parseCifraclubPage(html, title, artist) {
   // Prepend capo/tone info if found
   if (capoInfo) sheetText = `[${capoInfo} — acordes transpuestos automáticamente]\n\n` + sheetText;
 
-  return { type: "text", content: sheetText, source: "Cifraclub", url: songUrl };
+  return { type: "text", content: sheetText, source: "Cifraclub", url: "" };
 }
 
 // ── Chord transposition engine ────────────────────────────────
@@ -659,21 +675,19 @@ const NOTES_FLAT  = ["C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"];
 
 // Convert flat enharmonics to sharps — keeps Bb family untouched
 function flatToSharpText(text) {
-  // Eb→D#, Ab→G#, Db→C#, Gb→F#, Cb→B, Fb→E
-  // Bb stays Bb (matched by the \bBb lookbehind exclusion)
-  return text.replace(/\b(?!Bb)([A-A]b|Eb|Ab|Db|Gb|Cb|Fb)(?=[^a-z]|$)/g, n => {
-    const map = { "Eb":"D#","Ab":"G#","Db":"C#","Gb":"F#","Cb":"B","Fb":"E" };
-    return map[n] || n;
-  });
+  // Replace flat roots (not Bb) and keep chord suffix: Abm→G#m, Ebm7→D#m7, etc.
+  const map = { "Eb":"D#","Ab":"G#","Db":"C#","Gb":"F#","Cb":"B","Fb":"E" };
+  return text.replace(/\b(Eb|Ab|Db|Gb|Cb|Fb)((?:maj|min|m|dim|aug|sus[24]?|add)?[0-9]?(?:\/[A-G][#b]?)?)/g,
+    (_, root, suffix) => (map[root] || root) + suffix
+  );
 }
 
-// Convert sharps to flats — keeps A# as Bb too, never produces Bb for other notes
+// Convert sharps to flats: C#m→Dbm, G#m7→Abm7, A#→Bb, etc.
 function sharpToFlatText(text) {
-  // C#→Db, D#→Eb, F#→Gb, G#→Ab, A#→Bb
-  return text.replace(/\b([A-G]#)(?=[^a-z]|$)/g, n => {
-    const map = { "C#":"Db","D#":"Eb","F#":"Gb","G#":"Ab","A#":"Bb" };
-    return map[n] || n;
-  });
+  const map = { "C#":"Db","D#":"Eb","F#":"Gb","G#":"Ab","A#":"Bb" };
+  return text.replace(/\b([A-G]#)((?:maj|min|m|dim|aug|sus[24]?|add)?[0-9]?(?:\/[A-G][#b]?)?)/g,
+    (_, root, suffix) => (map[root] || root) + suffix
+  );
 }
 
 function transposeChord(chord, semitones) {
@@ -831,20 +845,36 @@ async function fetchChordsViaUltimateGuitar(title, artist) {
 
   const badVersions = /live|acoustic|acústic|en\s*vivo|unplugged|demo|rehearsal|karaoke|remix|cover/i;
 
-  // Priority: matching artist + title, no bad keywords, type=Chords
+  // Normalize for fuzzy title matching (strip feat, punctuation, extra spaces)
+  function normTitle(s) {
+    return (s || "").toLowerCase()
+      .replace(/\(feat\.?.*?\)/gi, "").replace(/\(ft\.?.*?\)/gi, "")
+      .replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  }
+  const normSearchTitle  = normTitle(title);
+  const normSearchArtist = normTitle(artist).split(" ")[0]; // first word of artist
+
   const chordResults = results.filter(r => r.type === "Chords");
-  const artistMatch  = chordResults.filter(r =>
-    r.artist_name?.toLowerCase().includes(artist.toLowerCase().split(" ")[0])
-  );
-  // Try clean studio version first, then any version
-  const chord =
-    artistMatch.find(r => !badVersions.test(r.song_name || "")) ||
-    artistMatch[0] ||
-    chordResults.find(r => !badVersions.test(r.song_name || "")) ||
-    chordResults[0];
+
+  // Score each result: title match + artist match + not bad version
+  function score(r) {
+    const t = normTitle(r.song_name);
+    const a = normTitle(r.artist_name);
+    let s = 0;
+    if (t === normSearchTitle)                            s += 10; // exact title
+    else if (t.includes(normSearchTitle) || normSearchTitle.includes(t)) s += 5;
+    if (a.includes(normSearchArtist))                     s += 4;
+    if (!badVersions.test(r.song_name || ""))             s += 2;
+    if (r.rating >= 4)                                    s += 1;
+    return s;
+  }
+
+  const chord = chordResults
+    .map(r => ({ r, s: score(r) }))
+    .sort((a, b) => b.s - a.s)[0]?.r;
 
   if (!chord?.tab_url) throw new Error("UG: sin acordes");
-  console.log("[UG] chord page:", chord.tab_url, "| song:", chord.song_name);
+  console.log("[UG] selected:", chord.song_name, "by", chord.artist_name, "score:", score(chord));
 
   const pageHtml = await fetchHtmlViaWorker(chord.tab_url);
   if (!pageHtml) throw new Error("UG: sin respuesta en página");
@@ -1033,10 +1063,6 @@ function startTeleprompterLoop() {
 
   function tick(now) {
     state.scroll._rafId = requestAnimationFrame(tick);
-
-    // Update FAB visibility
-    const fab = document.getElementById("scroll-top-fab");
-    if (fab) fab.classList.toggle("visible", window.scrollY > 300);
 
     if (state.scroll.userPaused) {
       state.scroll._lastTime = null;
