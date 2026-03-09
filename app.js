@@ -1301,10 +1301,7 @@ function normalizeText(value) {
     .replace(/\s+/g, " ").trim();
 }
 
-function hideSearchLinks() {
-  [el.ddgChordsLink, el.ddgSpanishLink, el.googleChordsLink, el.googleLyricsLink, el.copyQueryBtn]
-    .forEach(e => e?.classList.add("hidden"));
-}
+function hideSearchLinks() { /* removed */ }
 
 async function fetchJson(url) {
   try {
