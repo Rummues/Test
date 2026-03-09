@@ -135,7 +135,13 @@
 
     /* Chord highlighting in pre sheets */
     .chord-sheet-pre .chord { color: #b5ff4d; font-weight: 800; letter-spacing: 0.03em; }
+    .scroll-btn.active { background: var(--accent-2); color: #000; border-color: var(--accent-2); }
 
+    /* Source switcher — wraps on small screens */
+    .source-switcher {
+      flex-wrap: wrap;
+      gap: 6px;
+    }
     /* Source switcher button */
     .chords-card-head { position: relative; }
     .source-switcher {
@@ -360,6 +366,8 @@
             <button class="scroll-btn" id="transpose-down" title="Bajar semitono">♭</button>
             <span class="scroll-speed-label" id="transpose-label" style="min-width:36px;text-align:center">0</span>
             <button class="scroll-btn" id="transpose-up" title="Subir semitono">♯</button>
+            <span style="width:1px;background:var(--line);height:22px;margin:0 4px;display:inline-block"></span>
+            <button class="scroll-btn" id="enharmonic-btn" title="Convertir bemoles a sostenidos (excepto Bb)">♭→♯</button>
           </div>
 
           <div id="chords-sections">
