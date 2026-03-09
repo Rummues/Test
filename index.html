@@ -159,35 +159,28 @@
     .source-btn:hover { background: rgba(255,255,255,0.13); }
     .source-btn.active { border-color: var(--accent-1); color: var(--accent-1); }
 
-    /* Teleprompter scroll controls — normal flow by default */
+    /* Teleprompter scroll controls — always fixed at top when visible */
     .scroll-controls {
       display: none;
       align-items: center;
       gap: 6px;
       flex-wrap: wrap;
+      position: fixed;
+      top: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 500;
+      background: rgba(13, 17, 23, 0.95);
+      backdrop-filter: blur(16px);
+      -webkit-backdrop-filter: blur(16px);
       border-radius: 20px;
       padding: 10px 14px;
       border: 1px solid rgba(255,255,255,0.12);
-      background: rgba(13, 17, 23, 0.94);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
       box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-      margin-bottom: 12px;
+      white-space: nowrap;
       box-sizing: border-box;
+      max-width: calc(100vw - 24px);
     }
-    /* When JS detects it's been scrolled past, pin it to top */
-    .scroll-controls.is-pinned {
-      position: fixed;
-      top: 8px;
-      left: 0;
-      right: 0;
-      margin: 0 auto;
-      width: calc(100% - 32px);
-      max-width: 700px;
-      z-index: 200;
-      margin-bottom: 0;
-    }
-    /* Placeholder to prevent layout jump when pinned */
     .scroll-controls-placeholder {
       display: none;
     }
@@ -260,91 +253,74 @@
       display: flex;
     }
     #scroll-top-fab:hover { transform: scale(1.1); }
+
+    /* ── Gear button + Settings panel ── */
+    #gear-btn {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 600;
+      width: 38px;
+      height: 38px;
+      border-radius: 50%;
+      background: rgba(20,24,32,0.88);
+      backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
+      border: 1px solid rgba(255,255,255,0.12);
+      color: #ccc;
+      font-size: 18px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.4);
+      transition: transform 0.2s;
+    }
+    #gear-btn:hover { transform: rotate(30deg); }
+
+    #settings-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      z-index: 700;
+      backdrop-filter: blur(4px);
+    }
+    #settings-panel {
+      position: fixed;
+      top: 60px;
+      left: 12px;
+      width: min(320px, calc(100vw - 24px));
+      background: rgba(18,22,32,0.98);
+      border: 1px solid rgba(255,255,255,0.12);
+      border-radius: 16px;
+      padding: 18px;
+      z-index: 800;
+      box-shadow: 0 12px 40px rgba(0,0,0,0.6);
+      display: none;
+    }
+    #settings-panel.open { display: block; }
   </style>
 </head>
 <body>
+  <!-- Settings dropdown -->
+  <div id="settings-overlay" style="display:none" onclick="if(event.target===this)closeSettings()"></div>
+  <div id="settings-panel">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <strong style="font-size:15px">Cuenta Spotify</strong>
+      <button onclick="closeSettings()" style="background:none;border:none;color:#aaa;font-size:20px;cursor:pointer;padding:0">✕</button>
+    </div>
+    <span class="status-pill" id="auth-status-pill" style="margin-bottom:14px;display:inline-block">Sin conectar</span>
+    <p id="auth-helper" style="font-size:12px;color:var(--soft);margin-bottom:16px;line-height:1.5"></p>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button type="button" class="button button-primary" id="connect-btn">Conectar Spotify</button>
+      <button type="button" class="button button-secondary" id="disconnect-btn">Desconectar</button>
+    </div>
+  </div>
+  <button id="gear-btn" onclick="openSettings()" title="Configuración">⚙</button>
+
   <div class="page-shell">
-    <header class="hero">
-      <div class="hero-copy">
-        <p class="eyebrow">Spotify · Acordes automáticos · GitHub Pages</p>
-        <h1>Spotify Chords Board</h1>
-        <p class="hero-text">
-          Detecta la canción actual de Spotify y muestra los acordes reales automáticamente,
-          con letra y cifrado para piano y guitarra.
-        </p>
-      </div>
-      <div class="hero-badges">
-        <span class="badge badge-spotify">Spotify</span>
-        <span class="badge">Acordes reales</span>
-        <span class="badge">iPhone friendly</span>
-      </div>
-    </header>
 
-    <div class="layout">
-      <aside class="sidebar">
-
-        <!-- Setup card -->
-        <section class="card">
-          <div class="card-head">
-            <div>
-              <p class="section-label">Setup</p>
-              <h2>Configuración</h2>
-            </div>
-            <span class="status-pill" id="auth-status-pill">Sin conectar</span>
-          </div>
-
-          <ol class="steps">
-            <li>Sube estos archivos a GitHub y activa GitHub Pages.</li>
-            <li>Copia la Redirect URI de abajo y pégala en tu app de Spotify.</li>
-            <li>Pega tu Spotify Client ID y conecta la cuenta.</li>
-            <li>Crea tu key gratis en <a href="https://workers.cloudflare.com" target="_blank" style="color:#9fcbff">workers.cloudflare.com</a> (solo email, sin tarjeta) y pégala en el campo de abajo.</li>
-          </ol>
-
-          <div class="field-stack">
-            <div>
-              <label for="spotify-client-id">Spotify Client ID</label>
-              <input id="spotify-client-id" placeholder="Pega aquí tu Client ID de Spotify" autocomplete="off">
-            </div>
-
-            <div>
-              <label for="redirect-uri">Redirect URI exacta</label>
-              <div class="input-row">
-                <input id="redirect-uri" placeholder="https://tu-usuario.github.io/tu-repo/">
-                <button type="button" class="button button-secondary" id="copy-url-btn">Copiar</button>
-              </div>
-            </div>
-
-            <div>
-              <label for="worker-url">URL de tu Cloudflare Worker</label>
-              <input id="worker-url" type="url" placeholder="https://mi-proxy.TU-USUARIO.workers.dev" autocomplete="off">
-              <p class="api-key-hint">
-                Crea el Worker gratis en
-                <a href="https://workers.cloudflare.com" target="_blank" rel="noreferrer">workers.cloudflare.com</a>
-                (solo email, sin tarjeta) y pega el código <code>worker.js</code> que viene en el repo.
-                Luego copia aquí la URL que te da Cloudflare.
-              </p>
-            </div>
-
-
-
-          </div>
-
-          <div class="button-row">
-            <button type="button" class="button button-primary" id="connect-btn">Conectar Spotify</button>
-            <button type="button" class="button button-secondary" id="disconnect-btn">Desconectar</button>
-          </div>
-
-          <p class="helper" id="auth-helper">
-            Cuando publiques este repo en GitHub Pages, aquí aparecerá la URL exacta para registrar en Spotify.
-          </p>
-        </section>
-
-        <!-- Lyrics card -->
-
-
-      </aside>
-
-      <main class="main-panel">
+<main class="main-panel">
 
         <!-- Now Playing card -->
         <section class="card now-playing-card">
@@ -387,7 +363,7 @@
           <div class="card-head">
             <div>
               <p class="section-label">Acordes</p>
-              <h2>Cifrado de la canción actual</h2>
+              <h2>Acordes de la canción actual</h2>
             </div>
             <span class="status-pill status-pill-muted" id="chords-pill">Esperando</span>
           </div>
@@ -425,10 +401,14 @@
 
 
       </main>
-    </div>
-  </div>
-  <!-- Scroll to top FAB -->
+      <!-- Scroll to top FAB -->
   <button id="scroll-top-fab" aria-label="Volver al inicio" title="Volver al inicio">↑</button>
+
+  <!-- Hidden elements required by app.js -->
+  <input id="redirect-uri" type="hidden">
+  <input id="spotify-client-id" type="hidden">
+  <input id="worker-url" type="hidden">
+  <button id="copy-url-btn" style="display:none"></button>
 
   <script src="./app.js" defer></script>
 </body>
