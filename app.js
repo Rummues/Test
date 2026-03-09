@@ -1157,19 +1157,12 @@ function renderNowPlaying() {
   }
 
   el.coverArt.innerHTML = track.image
-    ? `<img alt="Portada" src="${escapeHtml(track.image)}" crossorigin="anonymous">`
+    ? `<img alt="Portada" src="${escapeHtml(track.image)}">`
     : initialsFromTrack(track);
 
-  // Extract dominant color from cover art for background
-  if (track.image) {
-    const img = el.coverArt.querySelector("img");
-    if (img) {
-      img.onload = () => extractAndSetBackground(img);
-      if (img.complete) extractAndSetBackground(img);
-    }
-  } else {
-    setPageBackground(null);
-  }
+  // Set background from album art color
+  if (track.image) extractAndSetBackground(track.image);
+  else setPageBackground(null);
 
   el.trackKicker.textContent    = track.isPlaying ? "Spotify detectado en tiempo real" : "Spotify detectado, en pausa";
   el.trackTitle.textContent     = track.name;
@@ -1385,30 +1378,43 @@ function getRedirectUri() {
 function setAuthStatus(tone, text)     { state.authTone = tone;     state.authText = text; }
 function setPlaybackStatus(tone, text) { state.playbackTone = tone; state.playbackText = text; }
 
-function extractAndSetBackground(img) {
+async function extractAndSetBackground(imageUrl) {
   try {
-    const canvas = document.createElement("canvas");
-    canvas.width = canvas.height = 32; // downscale for speed
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(img, 0, 0, 32, 32);
-    const data = ctx.getImageData(0, 0, 32, 32).data;
+    // Fetch via Worker proxy to bypass CORS
+    const proxied = proxyUrl(imageUrl);
+    const res = await fetch(proxied);
+    const blob = await res.blob();
+    const dataUrl = await new Promise(resolve => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.readAsDataURL(blob);
+    });
 
-    // Average the pixels, skip very dark/bright ones
-    let r = 0, g = 0, b = 0, count = 0;
-    for (let i = 0; i < data.length; i += 4) {
-      const pr = data[i], pg = data[i+1], pb = data[i+2];
-      const brightness = (pr + pg + pb) / 3;
-      if (brightness > 20 && brightness < 235) {
-        r += pr; g += pg; b += pb; count++;
+    const img = new Image();
+    img.onload = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = 32;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, 32, 32);
+      const data = ctx.getImageData(0, 0, 32, 32).data;
+
+      let r = 0, g = 0, b = 0, count = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const pr = data[i], pg = data[i+1], pb = data[i+2];
+        const brightness = (pr + pg + pb) / 3;
+        if (brightness > 15 && brightness < 240) {
+          r += pr; g += pg; b += pb; count++;
+        }
       }
-    }
-    if (count === 0) { setPageBackground(null); return; }
-    r = Math.round(r / count);
-    g = Math.round(g / count);
-    b = Math.round(b / count);
-    setPageBackground(`${r},${g},${b}`);
+      if (count === 0) { setPageBackground(null); return; }
+      r = Math.round(r / count);
+      g = Math.round(g / count);
+      b = Math.round(b / count);
+      setPageBackground(`${r},${g},${b}`);
+    };
+    img.src = dataUrl;
   } catch(e) {
-    // CORS issue — skip gracefully
+    console.log("[BG] color extract failed:", e.message);
     setPageBackground(null);
   }
 }
@@ -1420,11 +1426,10 @@ function setPageBackground(rgb) {
     bg.style.background = "";
     return;
   }
-  // Deep, dark radial gradient using the dominant color
   bg.style.background = `
-    radial-gradient(ellipse 120% 60% at 50% 0%,
-      rgba(${rgb}, 0.35) 0%,
-      rgba(${rgb}, 0.10) 40%,
+    radial-gradient(ellipse 140% 70% at 50% -10%,
+      rgba(${rgb}, 0.55) 0%,
+      rgba(${rgb}, 0.20) 45%,
       transparent 70%
     )
   `;
