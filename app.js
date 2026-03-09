@@ -645,23 +645,19 @@ function transposeChord(chord, semitones) {
 // without touching lyric words that start with those letters
 function applyTransposeToSheet(text, semitones) {
   if (!semitones) return text;
-  // Split into lines; on "chord lines" (lines where most tokens are chords), transpose
   const chordToken = /^[A-G][#b]?(?:m(?:aj)?|dim|aug|sus[24]?|add)?[0-9]?(?:\/[A-G][#b]?)?$/;
-  return text.split("
-").map(line => {
+  return text.split("\n").map(line => {
     const tokens = line.trim().split(/(\s+)/);
     const wordTokens = tokens.filter(t => t.trim());
     if (wordTokens.length === 0) return line;
     const chordCount = wordTokens.filter(t => chordToken.test(t)).length;
-    // If >50% of non-space tokens look like chords, transpose the whole line
     if (chordCount / wordTokens.length >= 0.5) {
       return tokens.map(t =>
         chordToken.test(t.trim()) ? transposeChord(t.trim(), semitones) + (t.endsWith(" ") ? " " : "") : t
       ).join("");
     }
     return line;
-  }).join("
-");
+  }).join("\n");
 }
 
 function buildSectionsFromChordSheet(lines, title, artist) {
@@ -825,24 +821,16 @@ function parseUltimateGuitarPage(html, title, artist) {
   let text = content
     .replace(/\[([a-z_\- ]+?)(?::\s*[^\]]*)?]/gi, (_, tag) => {
       const key = tag.toLowerCase().trim();
-      return "
-" + (sectionMap[key] || ("── " + tag)) + " ──
-";
+      return "\n" + (sectionMap[key] || ("── " + tag)) + " ──\n";
     })
     .replace(/\[ch]([^\[]*?)\[\/ch]/gi, "$1")
     .replace(/\[tab]([\s\S]*?)\[\/tab]/gi, (_, inner) => {
-      // Remove guitar diagram lines (e|--- b|--- etc)
-      return inner.split("
-")
+      return inner.split("\n")
         .filter(l => !/^\s*[eEbBgGdDaA]\|/.test(l) && !/^[-|]+$/.test(l.trim()))
-        .join("
-");
+        .join("\n");
     })
     .replace(/\[[^\]]*]/gi, "")
-    .replace(/
-{3,}/g, "
-
-")
+    .replace(/\n{3,}/g, "\n\n")
     .trim();
 
   if (!text || text.length < 20) throw new Error("UG: contenido vacío");
