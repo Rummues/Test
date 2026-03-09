@@ -1380,7 +1380,6 @@ function setPlaybackStatus(tone, text) { state.playbackTone = tone; state.playba
 
 async function extractAndSetBackground(imageUrl) {
   try {
-    // Fetch via Worker proxy to bypass CORS
     const proxied = proxyUrl(imageUrl);
     const res = await fetch(proxied);
     const blob = await res.blob();
@@ -1393,16 +1392,17 @@ async function extractAndSetBackground(imageUrl) {
     const img = new Image();
     img.onload = () => {
       const canvas = document.createElement("canvas");
-      canvas.width = canvas.height = 32;
+      canvas.width = canvas.height = 64;
       const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0, 32, 32);
-      const data = ctx.getImageData(0, 0, 32, 32).data;
+      ctx.drawImage(img, 0, 0, 64, 64);
+      const data = ctx.getImageData(0, 0, 64, 64).data;
 
       let r = 0, g = 0, b = 0, count = 0;
       for (let i = 0; i < data.length; i += 4) {
         const pr = data[i], pg = data[i+1], pb = data[i+2];
         const brightness = (pr + pg + pb) / 3;
-        if (brightness > 15 && brightness < 240) {
+        // Include more pixels — even darker ones
+        if (brightness > 8) {
           r += pr; g += pg; b += pb; count++;
         }
       }
@@ -1410,6 +1410,19 @@ async function extractAndSetBackground(imageUrl) {
       r = Math.round(r / count);
       g = Math.round(g / count);
       b = Math.round(b / count);
+
+      // Boost saturation: amplify dominant channel, suppress others
+      const max = Math.max(r, g, b);
+      const min = Math.min(r, g, b);
+      const sat = max === 0 ? 0 : (max - min) / max;
+
+      // If already saturated enough, just boost brightness
+      // If very grey/dark, still show a subtle tint
+      const factor = 2.2;
+      r = Math.min(255, Math.round(r * factor));
+      g = Math.min(255, Math.round(g * factor));
+      b = Math.min(255, Math.round(b * factor));
+
       setPageBackground(`${r},${g},${b}`);
     };
     img.src = dataUrl;
@@ -1426,11 +1439,12 @@ function setPageBackground(rgb) {
     bg.style.background = "";
     return;
   }
+  // Full-screen color wash — dark but clearly tinted
   bg.style.background = `
-    radial-gradient(ellipse 140% 70% at 50% -10%,
-      rgba(${rgb}, 0.55) 0%,
-      rgba(${rgb}, 0.20) 45%,
-      transparent 70%
+    radial-gradient(ellipse 200% 200% at 50% 50%,
+      rgba(${rgb}, 0.45) 0%,
+      rgba(${rgb}, 0.25) 50%,
+      rgba(${rgb}, 0.10) 100%
     )
   `;
 }
