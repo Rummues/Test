@@ -14,7 +14,7 @@
     }
     @media (max-width: 600px) {
       .chord-sheet-pre { font-size: 11px; line-height: 1.5; }
-      .card { padding: 14px 12px; border-radius: 12px; overflow-x: hidden; }
+      .card { padding: 14px 12px; border-radius: 12px; }
       h2 { font-size: 1rem; }
       .section-label { font-size: 10px; }
       .status-pill { font-size: 10px; padding: 3px 8px; }
@@ -159,16 +159,14 @@
     .source-btn:hover { background: rgba(255,255,255,0.13); }
     .source-btn.active { border-color: var(--accent-1); color: var(--accent-1); }
 
-    /* Teleprompter scroll controls — fixed at TOP */
+    /* Teleprompter scroll controls — sticky: stays put until scrolled past, then follows */
     .scroll-controls {
-      display: none; /* shown via JS as flex */
+      display: none; /* JS sets to flex when chords load */
       align-items: center;
       gap: 6px;
       flex-wrap: wrap;
-      position: fixed;
+      position: sticky;
       top: 8px;
-      left: 50%;
-      transform: translateX(-50%);
       z-index: 200;
       background: rgba(13, 17, 23, 0.94);
       backdrop-filter: blur(16px);
@@ -177,7 +175,7 @@
       padding: 10px 14px;
       border: 1px solid rgba(255,255,255,0.12);
       box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-      white-space: nowrap;
+      margin-bottom: 12px;
     }
     .scroll-btn {
       background: rgba(255,255,255,0.07);
