@@ -46,22 +46,16 @@ async function boot() {
 function cacheElements() {
   const ids = [
     "spotify-client-id", "worker-url", "redirect-uri",
-  "scroll-controls", "scroll-toggle", "scroll-slower", "scroll-faster", "scroll-speed-label",
-  "source-switcher", "transpose-down", "transpose-up", "transpose-label",
+    "scroll-controls", "scroll-toggle", "scroll-slower", "scroll-faster", "scroll-speed-label",
+    "source-switcher", "transpose-down", "transpose-up", "transpose-label",
     "copy-url-btn", "connect-btn", "disconnect-btn",
     "auth-status-pill", "auth-helper",
     "playback-pill", "cover-art",
     "track-kicker", "track-title", "track-artist", "track-album",
     "progress-left", "progress-right", "progress-fill",
     "sync-label", "spotify-link",
-    "lyrics-pill", "lyrics-copy", "lyrics-view", "lyrics-source-link",
     "chords-pill", "chords-key-badge", "chords-chips-row",
     "chords-sections", "chords-status-text",
-    "match-pill", "match-box",
-    "query-primary", "query-secondary", "chords-view",
-    "external-pill", "external-copy",
-    "ddg-chords-link", "ddg-spanish-link",
-    "google-chords-link", "google-lyrics-link", "copy-query-btn"
   ];
   ids.forEach(id => {
     const camel = id.replace(/-([a-z])/g, (_, c) => c.toUpperCase());
@@ -1096,30 +1090,7 @@ function renderNowPlaying() {
   renderSyncLabel();
 }
 
-function renderLyrics() {
-  el.lyricsPill.className   = `status-pill ${pillClassForTone(state.lyricsTone)}`;
-  el.lyricsPill.textContent = state.lyricsText;
-  el.lyricsView.textContent = state.lyricsBody;
-
-  if (!state.currentTrack) {
-    el.lyricsCopy.textContent = "Cuando cambie la canción, la app intentará conseguir la letra automáticamente.";
-    el.lyricsSourceLink.classList.add("hidden");
-    return;
-  }
-
-  el.lyricsCopy.textContent = state.lyricsTone === "live"
-    ? "Letra obtenida automáticamente."
-    : state.lyricsTone === "warn"
-      ? "No se encontró letra automática. Usa la búsqueda externa."
-      : "Buscando letra…";
-
-  if (state.lyricsSourceUrl) {
-    el.lyricsSourceLink.href = state.lyricsSourceUrl;
-    el.lyricsSourceLink.classList.remove("hidden");
-  } else {
-    el.lyricsSourceLink.classList.add("hidden");
-  }
-}
+function renderLyrics() { /* lyrics section removed */ }
 
 // ─── Chords Render ────────────────────────────────────────────
 function renderSourceSwitcher() {
@@ -1207,41 +1178,7 @@ function buildLyricLine(line) {
   </div>`;
 }
 
-function renderSearchDeck() {
-  const track = state.currentTrack;
-  if (!track) {
-    el.matchPill.className   = "status-pill status-pill-muted";
-    el.matchPill.textContent = "Inactivo";
-    el.matchBox.textContent  = "Cuando cambie la canción, prepararé consultas exactas para acordes.";
-    el.queryPrimary.textContent   = "Esperando una canción activa.";
-    el.querySecondary.textContent = "Aparecerá una variante para buscar cifras y acordes.";
-    el.chordsView.textContent     = "Búsquedas dirigidas aparecerán aquí.";
-    el.externalPill.className     = "status-pill status-pill-muted";
-    el.externalPill.textContent   = "Inactivo";
-    el.externalCopy.textContent   = "Sin iframes frágiles. Solo enlaces exactos orientados a resultados.";
-    hideSearchLinks();
-    return;
-  }
-
-  const plan = buildSearchPlan(track);
-  el.matchPill.className   = "status-pill status-pill-live";
-  el.matchPill.textContent = "Listo";
-  el.matchBox.textContent  = `Búsquedas para "${track.name}" de ${track.artists[0] || "artista desconocido"}.`;
-  el.queryPrimary.textContent   = plan.primaryQuery;
-  el.querySecondary.textContent = plan.secondaryQuery;
-  el.chordsView.textContent     = `Ataque 1: DuckDuckGo — sitios grandes de acordes.\nAtaque 2: variante hispana para cifras.\nAtaque 3: Google como respaldo.`;
-  el.externalPill.className     = "status-pill status-pill-live";
-  el.externalPill.textContent   = "Armado";
-  el.externalCopy.textContent   = "Estos enlaces usan el título limpio y artista principal.";
-
-  el.ddgChordsLink.href    = plan.ddgChordsUrl;
-  el.ddgSpanishLink.href   = plan.ddgSpanishUrl;
-  el.googleChordsLink.href = plan.googleChordsUrl;
-  el.googleLyricsLink.href = plan.googleLyricsUrl;
-
-  [el.ddgChordsLink, el.ddgSpanishLink, el.googleChordsLink, el.googleLyricsLink, el.copyQueryBtn]
-    .forEach(e => e.classList.remove("hidden"));
-}
+function renderSearchDeck() { /* search deck section removed */ }
 
 // ─── Search Plan ──────────────────────────────────────────────
 function buildSearchPlan(track) {
