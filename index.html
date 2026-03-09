@@ -2,11 +2,18 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
   <title>Spotify Chords Board</title>
   <meta name="description" content="Detección automática de acordes desde Spotify.">
   <link rel="stylesheet" href="./styles.css">
   <style>
+    /* ── Mobile responsive fixes ── */
+    @media (max-width: 480px) {
+      .chord-sheet-pre { font-size: 12px; }
+      .card { padding: 16px; }
+      h2 { font-size: 1.1rem; }
+    }
+
     /* ── Chords card extra styles ── */
     .chords-card { }
 
@@ -114,6 +121,30 @@
     }
     .api-key-hint a { color: #9fcbff; text-decoration: none; font-weight: 600; }
     .api-key-hint a:hover { text-decoration: underline; }
+
+    /* Source switcher button */
+    .chords-card-head { position: relative; }
+    .source-switcher {
+      position: absolute;
+      top: 0; right: 0;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      z-index: 10;
+    }
+    .source-btn {
+      background: rgba(255,255,255,0.07);
+      border: 1px solid var(--line);
+      color: var(--fg);
+      border-radius: 20px;
+      padding: 4px 10px;
+      font-size: 11px;
+      cursor: pointer;
+      white-space: nowrap;
+      transition: background 0.15s, border-color 0.15s;
+    }
+    .source-btn:hover { background: rgba(255,255,255,0.13); }
+    .source-btn.active { border-color: var(--accent-1); color: var(--accent-1); }
 
     /* Teleprompter scroll controls */
     .scroll-controls {
@@ -309,6 +340,7 @@
             </div>
             <span class="status-pill status-pill-muted" id="chords-pill">Esperando</span>
           </div>
+          <div class="source-switcher" id="source-switcher" style="display:none"></div>
 
           <div id="chords-key-badge" class="key-badge" style="display:none">
             <span class="chords-key-val">—</span>
