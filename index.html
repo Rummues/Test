@@ -302,10 +302,20 @@
     /* Dynamic album-art background */
     #dynamic-bg {
       position: fixed;
-      inset: 0;
+      inset: -60px; /* oversized to avoid blur edges */
       z-index: 0;
       pointer-events: none;
-      transition: background 1.2s ease;
+      background-size: cover;
+      background-position: center;
+      filter: blur(48px) brightness(0.45) saturate(1.4);
+      transition: background-image 0.8s ease;
+    }
+    /* Dark overlay so text stays readable */
+    #dynamic-bg::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.35);
     }
     .page-shell { position: relative; z-index: 1; }
   </style>
