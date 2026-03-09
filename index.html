@@ -349,12 +349,16 @@
 
           <div class="chords-chips-row" id="chords-chips-row"></div>
 
-          <!-- Teleprompter controls -->
+          <!-- Teleprompter + Transpose controls -->
           <div class="scroll-controls" id="scroll-controls" style="display:none">
-            <button class="scroll-btn" id="scroll-slower" title="Más lento">−</button>
+            <button class="scroll-btn" id="scroll-slower" title="Scroll más lento">−</button>
             <button class="scroll-btn scroll-btn-toggle" id="scroll-toggle" title="Pausar/reanudar scroll">⏸ Auto</button>
-            <button class="scroll-btn" id="scroll-faster" title="Más rápido">+</button>
+            <button class="scroll-btn" id="scroll-faster" title="Scroll más rápido">+</button>
             <span class="scroll-speed-label" id="scroll-speed-label">1×</span>
+            <span style="width:1px;background:var(--line);height:22px;margin:0 4px;display:inline-block"></span>
+            <button class="scroll-btn" id="transpose-down" title="Bajar semitono">♭</button>
+            <span class="scroll-speed-label" id="transpose-label" style="min-width:36px;text-align:center">0</span>
+            <button class="scroll-btn" id="transpose-up" title="Subir semitono">♯</button>
           </div>
 
           <div id="chords-sections">
