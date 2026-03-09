@@ -381,7 +381,8 @@ input:focus {
 }
 
 .progress-block {
-  margin-top: 18px;
+  margin-top: 12px;
+  margin-bottom: 12px;
 }
 
 .progress-labels {
