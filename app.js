@@ -1379,106 +1379,17 @@ function setAuthStatus(tone, text)     { state.authTone = tone;     state.authTe
 function setPlaybackStatus(tone, text) { state.playbackTone = tone; state.playbackText = text; }
 
 async function extractAndSetBackground(imageUrl) {
-  try {
-    const proxied = proxyUrl(imageUrl);
-    const res = await fetch(proxied);
-    const blob = await res.blob();
-    const dataUrl = await new Promise(resolve => {
-      const reader = new FileReader();
-      reader.onload = () => resolve(reader.result);
-      reader.readAsDataURL(blob);
-    });
-
-    const img = new Image();
-    img.onload = () => {
-      const SIZE = 64;
-      const canvas = document.createElement("canvas");
-      canvas.width = canvas.height = SIZE;
-      const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0, SIZE, SIZE);
-      const data = ctx.getImageData(0, 0, SIZE, SIZE).data;
-
-      // Collect vibrant pixels with their scores
-      const pixels = [];
-      for (let i = 0; i < data.length; i += 4) {
-        const r = data[i], g = data[i+1], b = data[i+2];
-        const max = Math.max(r, g, b);
-        const min = Math.min(r, g, b);
-        const brightness = max / 255;
-        const saturation = max === 0 ? 0 : (max - min) / max;
-        if (saturation > 0.3 && brightness > 0.15) {
-          pixels.push({ r, g, b, score: saturation * brightness });
-        }
-      }
-
-      if (pixels.length === 0) { setPageBackground(null, null); return; }
-
-      // Sort by score descending
-      pixels.sort((a, b2) => b2.score - a.score);
-
-      // Color 1: weighted average of top vibrant pixels (top 30%)
-      const top = Math.max(1, Math.floor(pixels.length * 0.3));
-      let r1 = 0, g1 = 0, b1 = 0, w1 = 0;
-      for (let i = 0; i < top; i++) {
-        const p = pixels[i];
-        r1 += p.r * p.score; g1 += p.g * p.score; b1 += p.b * p.score; w1 += p.score;
-      }
-      r1 = Math.round(r1/w1); g1 = Math.round(g1/w1); b1 = Math.round(b1/w1);
-
-      // Color 2: find pixels sufficiently different from color 1
-      let r2 = 0, g2 = 0, b2 = 0, w2 = 0;
-      for (const p of pixels) {
-        const dist = Math.sqrt((p.r-r1)**2 + (p.g-g1)**2 + (p.b-b1)**2);
-        if (dist > 60) {
-          r2 += p.r * p.score; g2 += p.g * p.score; b2 += p.b * p.score; w2 += p.score;
-        }
-      }
-      if (w2 === 0) {
-        // No distinct second color — use a darker version of color 1
-        r2 = Math.round(r1 * 0.5); g2 = Math.round(g1 * 0.5); b2 = Math.round(b1 * 0.5);
-      } else {
-        r2 = Math.round(r2/w2); g2 = Math.round(g2/w2); b2 = Math.round(b2/w2);
-      }
-
-      // Boost both colors to be punchy
-      function boost(r, g, b) {
-        const max = Math.max(r, g, b);
-        if (max > 0 && max < 190) {
-          const f = 210 / max;
-          return [Math.min(255, Math.round(r*f)), Math.min(255, Math.round(g*f)), Math.min(255, Math.round(b*f))];
-        }
-        return [r, g, b];
-      }
-      [r1,g1,b1] = boost(r1,g1,b1);
-      [r2,g2,b2] = boost(r2,g2,b2);
-
-      setPageBackground(`${r1},${g1},${b1}`, `${r2},${g2},${b2}`);
-    };
-    img.src = dataUrl;
-  } catch(e) {
-    console.log("[BG] color extract failed:", e.message);
-    setPageBackground(null, null);
-  }
+  setPageBackground(imageUrl);
 }
 
-function setPageBackground(rgb1, rgb2) {
+function setPageBackground(imageUrl) {
   const bg = document.getElementById("dynamic-bg");
   if (!bg) return;
-  if (!rgb1) {
-    bg.style.background = "";
+  if (!imageUrl) {
+    bg.style.backgroundImage = "";
     return;
   }
-  const c2 = rgb2 || rgb1;
-  // Diagonal split with soft blend between the two dominant colors
-  bg.style.background = `
-    linear-gradient(
-      135deg,
-      rgba(${rgb1}, 0.55) 0%,
-      rgba(${rgb1}, 0.35) 35%,
-      rgba(${c2}, 0.35) 65%,
-      rgba(${c2}, 0.55) 100%
-    )
-  `;
+  bg.style.backgroundImage = `url("${imageUrl}")`;
 }
 
 function pillClassForTone(tone) {
