@@ -299,9 +299,20 @@
       display: none;
     }
     #settings-panel.open { display: block; }
+    /* Dynamic album-art background */
+    #dynamic-bg {
+      position: fixed;
+      inset: 0;
+      z-index: 0;
+      pointer-events: none;
+      transition: background 1.5s ease;
+    }
+    .page-shell { position: relative; z-index: 1; }
   </style>
 </head>
 <body>
+  <!-- Dynamic background layer -->
+  <div id="dynamic-bg"></div>
   <!-- Settings dropdown -->
   <div id="settings-overlay" style="display:none" onclick="if(event.target===this)closeSettings()"></div>
   <div id="settings-panel">
