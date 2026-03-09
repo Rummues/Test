@@ -544,7 +544,7 @@ async function fetchChordsViaCifraclub(title, artist) {
     console.log("[Cifraclub] using slug fallback:", songUrl);
   }
 
-  const songHtml = await fetchHtmlViaWorker(songUrl + "?tabs=false&instrument=keyboard");
+  const songHtml = await fetchHtmlViaWorker(songUrl + "?tabs=false&instrument=keyboard#tabs=false&instrument=keyboard");
   if (!songHtml || songHtml.length < 1000) throw new Error("Cifraclub: página de canción vacía");
 
   return parseCifraclubPage(songHtml, title, artist);
@@ -819,16 +819,20 @@ function parseUltimateGuitarPage(html, title, artist) {
   };
 
   let text = content
-    .replace(/\[([a-z_\- ]+?)(?::\s*[^\]]*)?]/gi, (_, tag) => {
-      const key = tag.toLowerCase().trim();
-      return "\n" + (sectionMap[key] || ("── " + tag)) + " ──\n";
-    })
-    .replace(/\[ch]([^\[]*?)\[\/ch]/gi, "$1")
+    // 1. Strip tab diagram blocks first
     .replace(/\[tab]([\s\S]*?)\[\/tab]/gi, (_, inner) => {
       return inner.split("\n")
         .filter(l => !/^\s*[eEbBgGdDaA]\|/.test(l) && !/^[-|]+$/.test(l.trim()))
         .join("\n");
     })
+    // 2. Unwrap chord markers
+    .replace(/\[ch]([^\[]*?)\[\/ch]/gi, "$1")
+    // 3. Now replace section markers (tab/ch are already gone)
+    .replace(/\[([a-z_\- ]+?)(?::\s*[^\]]*)?]/gi, (_, tag) => {
+      const key = tag.toLowerCase().trim();
+      return "\n" + (sectionMap[key] || ("── " + tag)) + " ──\n";
+    })
+    // 4. Remove any remaining unknown tags
     .replace(/\[[^\]]*]/gi, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
@@ -926,50 +930,55 @@ function startProgressLoop() {
     updateProgressDisplay();
     renderSyncLabel();
   }, 500);
-  // Teleprompter runs on RAF for buttery smooth scrolling
-  startTeleprompterRAF();
+  startTeleprompterLoop();
 }
 
-// ─── Teleprompter (RAF loop) ───────────────────────────────────
-function startTeleprompterRAF() {
-  if (state.scroll._rafId) cancelAnimationFrame(state.scroll._rafId);
-
-  function tick() {
-    teleprompterFrame();
-    state.scroll._rafId = requestAnimationFrame(tick);
-  }
-  state.scroll._rafId = requestAnimationFrame(tick);
+// ─── Teleprompter ──────────────────────────────────────────────
+// Simple approach: every 100ms, calculate where we should be
+// based on song progress and smoothly move 1px at a time toward it
+function startTeleprompterLoop() {
+  if (state.scroll._timer) clearInterval(state.scroll._timer);
+  state.scroll._timer = setInterval(teleprompterTick, 100);
 }
 
-function teleprompterFrame() {
+function teleprompterTick() {
+  if (state.scroll.userPaused) return;
   const track = state.currentTrack;
-  if (!track || !state.chordsData || state.scroll.userPaused) return;
+  if (!track || !state.chordsData) return;
 
   const sections = el.chordsSections;
   if (!sections) return;
 
-  const rect       = sections.getBoundingClientRect();
-  const absTop     = window.scrollY + rect.top;
-  const scrollable = absTop + sections.scrollHeight - window.innerHeight;
-  if (scrollable <= 10) return;
+  // Total scrollable height of the page
+  const pageHeight   = document.documentElement.scrollHeight;
+  const viewHeight   = window.innerHeight;
+  const maxScroll    = pageHeight - viewHeight;
+  if (maxScroll < 50) return;
+
+  // Where the chords section starts on the page
+  const rect    = sections.getBoundingClientRect();
+  const secTop  = window.scrollY + rect.top;
+  const secHeight = sections.scrollHeight;
+  const secScrollable = secTop + secHeight - viewHeight;
+  if (secScrollable < 50) return;
 
   const progressMs = computeProgressMs();
   const durationMs = track.durationMs || 1;
-  const ratio      = Math.min((progressMs / durationMs) * state.scroll.speed, 1);
+  const ratio = Math.min((progressMs / durationMs) * state.scroll.speed, 1);
 
-  // Target: scroll until sections bottom hits viewport bottom
-  const target  = Math.round(absTop + ratio * (scrollable - absTop));
+  // Target scroll position
+  const target = Math.round(secTop + ratio * (secScrollable - secTop));
   const current = window.scrollY;
-  const diff    = target - current;
+  const diff = target - current;
 
-  // Very gentle ease: 2% per frame at 60fps ≈ imperceptible movement
-  if (Math.abs(diff) < 0.5) return;
-  const step = diff * 0.02;
+  if (Math.abs(diff) < 1) return;
+
+  // Move at most 8px per tick (100ms) = max 80px/sec — very smooth
+  const step = Math.sign(diff) * Math.min(Math.abs(diff), 8);
 
   state.scroll._programmatic = true;
-  window.scrollTo({ top: current + step, behavior: "instant" });
-  // Clear flag after paint so manual scroll detection works
-  setTimeout(() => { state.scroll._programmatic = false; }, 50);
+  window.scrollBy({ top: step, behavior: "instant" });
+  setTimeout(() => { state.scroll._programmatic = false; }, 120);
 }
 
 function updateScrollUI() {
