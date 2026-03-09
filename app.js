@@ -1151,13 +1151,25 @@ function renderNowPlaying() {
     el.progressLeft.textContent   = "0:00";
     el.progressRight.textContent  = "0:00";
     el.progressFill.style.width   = "0%";
+    setPageBackground(null);
     renderSyncLabel();
     return;
   }
 
   el.coverArt.innerHTML = track.image
-    ? `<img alt="Portada" src="${escapeHtml(track.image)}">`
+    ? `<img alt="Portada" src="${escapeHtml(track.image)}" crossorigin="anonymous">`
     : initialsFromTrack(track);
+
+  // Extract dominant color from cover art for background
+  if (track.image) {
+    const img = el.coverArt.querySelector("img");
+    if (img) {
+      img.onload = () => extractAndSetBackground(img);
+      if (img.complete) extractAndSetBackground(img);
+    }
+  } else {
+    setPageBackground(null);
+  }
 
   el.trackKicker.textContent    = track.isPlaying ? "Spotify detectado en tiempo real" : "Spotify detectado, en pausa";
   el.trackTitle.textContent     = track.name;
@@ -1372,6 +1384,51 @@ function getRedirectUri() {
 
 function setAuthStatus(tone, text)     { state.authTone = tone;     state.authText = text; }
 function setPlaybackStatus(tone, text) { state.playbackTone = tone; state.playbackText = text; }
+
+function extractAndSetBackground(img) {
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = canvas.height = 32; // downscale for speed
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0, 32, 32);
+    const data = ctx.getImageData(0, 0, 32, 32).data;
+
+    // Average the pixels, skip very dark/bright ones
+    let r = 0, g = 0, b = 0, count = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      const pr = data[i], pg = data[i+1], pb = data[i+2];
+      const brightness = (pr + pg + pb) / 3;
+      if (brightness > 20 && brightness < 235) {
+        r += pr; g += pg; b += pb; count++;
+      }
+    }
+    if (count === 0) { setPageBackground(null); return; }
+    r = Math.round(r / count);
+    g = Math.round(g / count);
+    b = Math.round(b / count);
+    setPageBackground(`${r},${g},${b}`);
+  } catch(e) {
+    // CORS issue — skip gracefully
+    setPageBackground(null);
+  }
+}
+
+function setPageBackground(rgb) {
+  const bg = document.getElementById("dynamic-bg");
+  if (!bg) return;
+  if (!rgb) {
+    bg.style.background = "";
+    return;
+  }
+  // Deep, dark radial gradient using the dominant color
+  bg.style.background = `
+    radial-gradient(ellipse 120% 60% at 50% 0%,
+      rgba(${rgb}, 0.35) 0%,
+      rgba(${rgb}, 0.10) 40%,
+      transparent 70%
+    )
+  `;
+}
 
 function pillClassForTone(tone) {
   if (tone === "live")  return "status-pill-live";
