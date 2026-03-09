@@ -567,41 +567,52 @@ async function fetchHtmlViaWorker(targetUrl) {
 }
 
 function parseCifraclubPage(html, title, artist) {
-  // ── Read __NEXT_DATA__ to get keyboard transposition value ──
+  // ── Detect capo and tuning from visible HTML text ──
+  // Cifraclub renders lines like:
+  //   "Tono: E (forma de los acordes en el tono de C)"  → auto-transpose
+  //   "Capo en el 6º traste"                            → +6 semitones
+  //   "Afinación: D G C F A D"                          → note for display
   let semitones = 0;
-  const nextMatch = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
-  if (nextMatch) {
-    try {
-      const data = JSON.parse(nextMatch[1]);
-      const pageProps = data?.props?.pageProps || {};
-      console.log("[Cifraclub song] nextData keys:", Object.keys(pageProps));
+  let capoInfo  = "";
 
-      const cifra = pageProps.cifra || pageProps.song || pageProps.data?.cifra;
-      if (cifra) {
-        console.log("[Cifraclub song] cifra keys:", Object.keys(cifra));
-        // tom = guitar key semitone offset, tom_teclado = keyboard semitone offset
-        const tomGuitarra = cifra.tom ?? cifra.tom_guitarra ?? 0;
-        const tomTeclado  = cifra.tom_teclado ?? cifra.tomTeclado ?? null;
-        // If keyboard tone is explicitly given, calculate difference
-        if (tomTeclado !== null) {
-          semitones = tomTeclado - tomGuitarra;
-          console.log("[Cifraclub song] guitar tom:", tomGuitarra, "keyboard tom:", tomTeclado, "→ transpose:", semitones);
-        } else {
-          console.log("[Cifraclub song] no tom_teclado found, cifra:", JSON.stringify(cifra).slice(0, 400));
-        }
+  // Look for "Capo en el Nº traste" or "Capo on Nth fret"
+  const capoMatch = html.match(/[Cc]apo\s+(?:en\s+el\s+)?(\d+)[ºª°]?\s*(?:traste|fret)/i)
+                 || html.match(/[Cc]apo[:\s]+(\d+)/i);
+  if (capoMatch) {
+    semitones = parseInt(capoMatch[1], 10);
+    capoInfo  = `Capo ${capoMatch[1]}`;
+    console.log("[Cifraclub] capo detected:", semitones, "semitones");
+  }
+
+  // Also check "Tono: X (forma en el tono de Y)" — X is real key, Y is chord shapes key
+  // The difference tells us how many semitones the chords are transposed
+  if (!semitones) {
+    const tonoMatch = html.match(/[Tt]ono[:\s]+([A-G][#b]?m?)\s*\(forma\s+de\s+los\s+acordes\s+en\s+el\s+tono\s+de\s+([A-G][#b]?m?)\)/i)
+                   || html.match(/[Tt]ono[:\s]+([A-G][#b]?m?)\s*\(chord\s+shapes?\s+in\s+(?:the\s+key\s+of\s+)?([A-G][#b]?m?)\)/i);
+    if (tonoMatch) {
+      const realKey   = tonoMatch[1];
+      const shapeKey  = tonoMatch[2];
+      const realIdx   = NOTES_SHARP.indexOf(realKey.replace("m",""))  !== -1
+                        ? NOTES_SHARP.indexOf(realKey.replace("m",""))
+                        : NOTES_FLAT.indexOf(realKey.replace("m",""));
+      const shapeIdx  = NOTES_SHARP.indexOf(shapeKey.replace("m","")) !== -1
+                        ? NOTES_SHARP.indexOf(shapeKey.replace("m",""))
+                        : NOTES_FLAT.indexOf(shapeKey.replace("m",""));
+      if (realIdx !== -1 && shapeIdx !== -1) {
+        semitones = ((realIdx - shapeIdx) + 12) % 12;
+        capoInfo  = `Tono: ${realKey}`;
+        console.log("[Cifraclub] tone mismatch detected:", shapeKey, "→", realKey, "=", semitones, "semitones");
       }
-    } catch (e) {
-      console.error("[Cifraclub song] JSON parse error:", e.message);
     }
   }
 
-  // ── Parse the <pre> tag (guitar chords) ──
+  // ── Parse the <pre> tag (guitar chord shapes) ──
   const clean = html
     .replace(/<script[\s\S]*?<\/script>/gi, "")
     .replace(/<style[\s\S]*?<\/style>/gi, "");
 
   const preMatch = clean.match(/<pre[^>]*>([\s\S]*?)<\/pre>/i);
-  console.log("[Cifraclub] pre tag found:", !!preMatch);
+  console.log("[Cifraclub] pre tag found:", !!preMatch, "semitones:", semitones);
   if (!preMatch) {
     console.log("[Cifraclub] html sample:", clean.slice(0, 500));
     return null;
@@ -610,10 +621,10 @@ function parseCifraclubPage(html, title, artist) {
   const raw = preMatch[1];
   const chordPattern = /<b>([A-G][#b]?(?:m(?:aj)?|dim|aug|sus[24]?|add)?(?:[0-9])?(?:\/[A-G][#b]?)?)<\/b>/g;
   const allChords = [...raw.matchAll(chordPattern)].map(m => m[1]);
-  console.log("[Cifraclub] chords found:", allChords.length, "transpose semitones:", semitones);
+  console.log("[Cifraclub] chords found:", allChords.length, "transpose:", semitones);
   if (allChords.length < 2) return null;
 
-  // ── Convert to plain text, applying transposition if needed ──
+  // ── Convert to plain text, applying detected transposition ──
   let sheetText = raw
     .replace(/<b>([^<]+)<\/b>/g, (_, chord) => transposeChord(chord, semitones))
     .replace(/<[^>]+>/g, "")
@@ -621,6 +632,9 @@ function parseCifraclubPage(html, title, artist) {
     .replace(/&lt;/g, "<").replace(/&gt;/g, ">")
     .replace(/&#[0-9]+;/g, "")
     .trim();
+
+  // Prepend capo/tone info if found
+  if (capoInfo) sheetText = `[${capoInfo} — acordes transpuestos automáticamente]\n\n` + sheetText;
 
   return { type: "text", content: sheetText, source: "Cifraclub" };
 }
@@ -949,16 +963,14 @@ function teleprompterTick() {
   const sections = el.chordsSections;
   if (!sections) return;
 
-  // Total scrollable height of the page
   const pageHeight   = document.documentElement.scrollHeight;
   const viewHeight   = window.innerHeight;
   const maxScroll    = pageHeight - viewHeight;
   if (maxScroll < 50) return;
 
-  // Where the chords section starts on the page
-  const rect    = sections.getBoundingClientRect();
-  const secTop  = window.scrollY + rect.top;
-  const secHeight = sections.scrollHeight;
+  const rect        = sections.getBoundingClientRect();
+  const secTop      = window.scrollY + rect.top;
+  const secHeight   = sections.scrollHeight;
   const secScrollable = secTop + secHeight - viewHeight;
   if (secScrollable < 50) return;
 
@@ -966,15 +978,14 @@ function teleprompterTick() {
   const durationMs = track.durationMs || 1;
   const ratio = Math.min((progressMs / durationMs) * state.scroll.speed, 1);
 
-  // Target scroll position
-  const target = Math.round(secTop + ratio * (secScrollable - secTop));
+  const target  = Math.round(secTop + ratio * (secScrollable - secTop));
   const current = window.scrollY;
-  const diff = target - current;
+  const diff    = target - current;
 
-  if (Math.abs(diff) < 1) return;
+  if (Math.abs(diff) < 0.5) return;
 
-  // Move at most 8px per tick (100ms) = max 80px/sec — very smooth
-  const step = Math.sign(diff) * Math.min(Math.abs(diff), 8);
+  // Max 2px per tick (100ms) = 20px/sec — very gentle
+  const step = Math.sign(diff) * Math.min(Math.abs(diff), 2);
 
   state.scroll._programmatic = true;
   window.scrollBy({ top: step, behavior: "instant" });
