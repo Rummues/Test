@@ -718,15 +718,33 @@ function transposeChord(chord, semitones) {
   });
 }
 
-// Wrap chord tokens in <span class="chord"> for color highlighting
-// Only applied after escapeHtml so we work on the safe string
+// Wrap chord tokens in <span class="chord"> — ONLY on chord-dominant lines
 function highlightChords(safeText) {
-  // Chord pattern as a word: A-G + optional #/b + optional suffix + optional /bass
-  // Must be surrounded by spaces, line start/end, or punctuation — not inside words
-  return safeText.replace(
-    /(?<![A-Za-z])([A-G][#b]?(?:maj|min|m|dim|aug|sus[24]?|add)?[0-9]?(?:\/[A-G][#b]?)?)(?![A-Za-z])/g,
-    '<span class="chord">$1</span>'
-  );
+  const chordToken = /^[A-G][#b]?(?:maj7?|min7?|m7?|dim7?|aug|sus[24]?|add[0-9]+)?[0-9]?(?:\/[A-G][#b]?)?$/;
+
+  return safeText.split("\n").map(line => {
+    // Don't highlight section headers like [Intro], [Verso]
+    if (/^\s*[\[—]/.test(line)) return line;
+
+    const tokens = line.trim().split(/\s+/).filter(Boolean);
+    if (tokens.length === 0) return line;
+
+    // Count how many tokens are pure chord tokens
+    const chordCount = tokens.filter(t => {
+      // strip HTML entities (e.g. &amp;) then test
+      const clean = t.replace(/&[a-z]+;/g, "").replace(/<[^>]*>/g, "");
+      return chordToken.test(clean);
+    }).length;
+
+    // Only highlight if majority of tokens are chords (chord line)
+    if (chordCount / tokens.length < 0.5) return line;
+
+    // It's a chord line — wrap each chord token
+    return line.replace(
+      /(?<![A-Za-z])([A-G][#b]?(?:maj7?|min7?|m7?|dim7?|aug|sus[24]?|add[0-9]+)?[0-9]?(?:\/[A-G][#b]?)?)(?![A-Za-z0-9])/g,
+      '<span class="chord">$1</span>'
+    );
+  }).join("\n");
 }
 // Replaces chord tokens (A-G + optional # or b + optional suffix)
 // without touching lyric words that start with those letters
