@@ -1111,7 +1111,9 @@ function updateScrollUI() {
 }
 
 function showScrollControls(visible) {
-  if (el.scrollControls) el.scrollControls.style.display = visible ? "flex" : "none";
+  // Target the new ctrl-bar element (id="scroll-controls" still works)
+  const bar = document.getElementById("scroll-controls");
+  if (bar) bar.style.display = visible ? "flex" : "none";
 }
 
 // ─── Render ───────────────────────────────────────────────────
@@ -1151,6 +1153,7 @@ function renderNowPlaying() {
     el.progressRight.textContent  = "0:00";
     el.progressFill.style.width   = "0%";
     setPageBackground(null);
+    document.documentElement.style.removeProperty("--chord-color");
     renderSyncLabel();
     return;
   }
@@ -1378,7 +1381,66 @@ function setAuthStatus(tone, text)     { state.authTone = tone;     state.authTe
 function setPlaybackStatus(tone, text) { state.playbackTone = tone; state.playbackText = text; }
 
 async function extractAndSetBackground(imageUrl) {
-  setPageBackground(imageUrl);
+  setPageBackground(imageUrl); // blurred bg immediately
+
+  try {
+    const proxied = proxyUrl(imageUrl);
+    const res = await fetch(proxied);
+    const blob = await res.blob();
+    const dataUrl = await new Promise(resolve => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result);
+      reader.readAsDataURL(blob);
+    });
+
+    const img = new Image();
+    img.onload = () => {
+      const SIZE = 64;
+      const canvas = document.createElement("canvas");
+      canvas.width = canvas.height = SIZE;
+      const ctx = canvas.getContext("2d");
+      ctx.drawImage(img, 0, 0, SIZE, SIZE);
+      const data = ctx.getImageData(0, 0, SIZE, SIZE).data;
+
+      // Collect vibrant pixels weighted by saturation × brightness
+      let r = 0, g = 0, b = 0, w = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        const pr = data[i], pg = data[i+1], pb = data[i+2];
+        const max = Math.max(pr, pg, pb);
+        const min = Math.min(pr, pg, pb);
+        const brightness = max / 255;
+        const saturation = max === 0 ? 0 : (max - min) / max;
+        if (saturation > 0.25 && brightness > 0.15) {
+          const score = saturation * brightness;
+          r += pr * score; g += pg * score; b += pb * score; w += score;
+        }
+      }
+
+      if (w === 0) return; // no vibrant pixels, keep default
+
+      let fr = Math.round(r / w);
+      let fg = Math.round(g / w);
+      let fb = Math.round(b / w);
+
+      // Boost to make it pop on dark background — target brightness ~210
+      const max = Math.max(fr, fg, fb);
+      if (max > 0 && max < 200) {
+        const boost = 210 / max;
+        fr = Math.min(255, Math.round(fr * boost));
+        fg = Math.min(255, Math.round(fg * boost));
+        fb = Math.min(255, Math.round(fb * boost));
+      }
+
+      // Apply as CSS variable — used for chord highlighting
+      const hex = "#" + [fr, fg, fb].map(v => v.toString(16).padStart(2, "0")).join("");
+      document.documentElement.style.setProperty("--chord-color", hex);
+      console.log("[BG] chord color set:", hex);
+    };
+    img.src = dataUrl;
+  } catch(e) {
+    console.log("[BG] color extract failed:", e.message);
+    // keep default chord color
+  }
 }
 
 function setPageBackground(imageUrl) {
