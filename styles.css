@@ -359,20 +359,23 @@ html, body {
 
 /* Play/pause toggle */
 .ctrl-play {
-  width: auto;
-  padding: 0 13px;
+  width: auto !important;
+  min-width: 72px;
+  padding: 0 14px;
   height: 30px;
   font-size: 12px;
-  font-weight: 700;
-  border-radius: var(--r-pill);
+  font-weight: 600;
+  border-radius: 999px;
   background: rgba(48,209,88,0.18);
   border: 1px solid rgba(48,209,88,0.30);
   color: #7dffb0;
+  flex-shrink: 0;
+  letter-spacing: -0.01em;
 }
 .ctrl-play.paused {
-  background: rgba(255,255,255,0.07);
-  border-color: rgba(255,255,255,0.10);
-  color: var(--text-2);
+  background: rgba(255,255,255,0.08);
+  border-color: rgba(255,255,255,0.12);
+  color: rgba(255,255,255,0.70);
 }
 .ctrl-play:active { opacity: .75; }
 
