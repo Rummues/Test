@@ -720,29 +720,42 @@ function transposeChord(chord, semitones) {
 
 // Wrap chord tokens in <span class="chord"> — ONLY on chord-dominant lines
 function highlightChords(safeText) {
-  const chordToken = /^[A-G][#b]?(?:maj7?|min7?|m7?|dim7?|aug|sus[24]?|add[0-9]+)?[0-9]?(?:\/[A-G][#b]?)?$/;
+  // Comprehensive chord pattern:
+  // Root: A-G + optional # or b
+  // Quality + extensions including alterations like m7b5, maj9#11, sus4, etc.
+  const CHORD_RE = /^[A-G][#b]?(?:M(?:aj)?|maj|min|dim|aug|sus[24]?|add)?[0-9]?[0-9]?(?:[#b][0-9]+)*(?:m(?:aj)?[0-9]?(?:[#b][0-9]+)?)?(?:\/[A-G][#b]?)?$/;
+
+  // Slightly looser version for the line-level test (strips trailing punctuation)
+  const isChordToken = (t) => {
+    // Remove HTML entities and tags
+    const clean = t.replace(/&[a-z0-9#]+;/gi, "").replace(/<[^>]*>/g, "").replace(/[()[\]]/g, "");
+    if (!clean || clean.length > 10) return false;
+    // Must start with A-G
+    if (!/^[A-G]/.test(clean)) return false;
+    return CHORD_RE.test(clean);
+  };
 
   return safeText.split("\n").map(line => {
-    // Don't highlight section headers like [Intro], [Verso]
-    if (/^\s*[\[—]/.test(line)) return line;
+    // Never highlight section markers or capo lines
+    if (/^\s*[\[—(]/.test(line)) return line;
 
-    const tokens = line.trim().split(/\s+/).filter(Boolean);
+    const stripped = line.replace(/<[^>]*>/g, "");
+    const tokens = stripped.trim().split(/\s+/).filter(Boolean);
     if (tokens.length === 0) return line;
 
-    // Count how many tokens are pure chord tokens
-    const chordCount = tokens.filter(t => {
-      // strip HTML entities (e.g. &amp;) then test
-      const clean = t.replace(/&[a-z]+;/g, "").replace(/<[^>]*>/g, "");
-      return chordToken.test(clean);
-    }).length;
+    const chordCount = tokens.filter(isChordToken).length;
 
-    // Only highlight if majority of tokens are chords (chord line)
-    if (chordCount / tokens.length < 0.5) return line;
+    // Only highlight if this is predominantly a chord line
+    if (chordCount === 0 || chordCount / tokens.length < 0.45) return line;
 
-    // It's a chord line — wrap each chord token
+    // Replace chord tokens inline — comprehensive pattern
     return line.replace(
-      /(?<![A-Za-z])([A-G][#b]?(?:maj7?|min7?|m7?|dim7?|aug|sus[24]?|add[0-9]+)?[0-9]?(?:\/[A-G][#b]?)?)(?![A-Za-z0-9])/g,
-      '<span class="chord">$1</span>'
+      /(?<![A-Za-z])([A-G][#b]?(?:(?:maj|min|dim|aug|sus[24]?|add)[0-9]{0,2}|m(?:aj)?[0-9]?|M[0-9]?)?(?:[0-9]{1,2})?(?:[#b][0-9])?(?:\/[A-G][#b]?)?)(?![A-Za-z])/g,
+      (match, chord) => {
+        // Final check: must start with valid root
+        if (!/^[A-G]/.test(chord)) return match;
+        return `<span class="chord">${chord}</span>`;
+      }
     );
   }).join("\n");
 }
@@ -1121,7 +1134,7 @@ function startTeleprompterLoop() {
 function updateScrollUI() {
   if (!el.scrollToggle) return;
   const paused = state.scroll.userPaused;
-  el.scrollToggle.textContent = paused ? "▶ Auto" : "⏸ Auto";
+  el.scrollToggle.textContent = paused ? "▶ Auto" : "■ Auto";
   el.scrollToggle.classList.toggle("paused", paused);
   if (el.scrollSpeedLabel) {
     el.scrollSpeedLabel.textContent = state.scroll.speed.toFixed(2).replace(/\.?0+$/, "") + "×";
