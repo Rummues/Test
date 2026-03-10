@@ -342,7 +342,7 @@ function disconnectSpotify() {
 function startSpotifyPolling() {
   stopSpotifyPolling();
   fetchSpotifyPlayback();
-  state.pollTimer = window.setInterval(fetchSpotifyPlayback, 4000);
+  state.pollTimer = window.setInterval(fetchSpotifyPlayback, 1500);
   startProgressLoop();
 }
 
@@ -621,12 +621,13 @@ function parseCifraclubPage(html, title, artist) {
   let semitones = 0;
   let capoInfo  = "";
 
-  // Look for "Capo en el Nº traste" or "Capo on Nth fret"
-  const capoMatch = html.match(/[Cc]apo\s+(?:en\s+el\s+)?(\d+)[ºª°]?\s*(?:traste|fret)/i)
+  // Look for "Capo en el Nº traste", "Capo on Nth fret", "Cejilla: 1er traste"
+  const capoMatch = html.match(/[Cc]ejilla[:\s]+(\d+)/i)
+                 || html.match(/[Cc]apo\s+(?:en\s+el\s+)?(\d+)[ºª°]?\s*(?:traste|fret)/i)
                  || html.match(/[Cc]apo[:\s]+(\d+)/i);
   if (capoMatch) {
     semitones = parseInt(capoMatch[1], 10);
-    capoInfo  = `Capo ${capoMatch[1]}`;
+    capoInfo  = `Cejilla ${capoMatch[1]}`;
     console.log("[Cifraclub] capo detected:", semitones, "semitones");
   }
 
@@ -924,6 +925,15 @@ function parseUltimateGuitarPage(html, title, artist) {
   }
   console.log("[UG] raw content sample:", content.slice(0, 300));
 
+  // ── Detect capo BEFORE processing removes header lines ──
+  let ugSemitones = 0;
+  const capoRaw = content.match(/[Cc]apo[:\s]+(\d+)(?:st|nd|rd|th)?\s*(?:fret|traste)?/i)
+               || content.match(/[Cc]ejilla[:\s]+(\d+)/i);
+  if (capoRaw) {
+    ugSemitones = parseInt(capoRaw[1], 10);
+    console.log("[UG] capo detected:", ugSemitones);
+  }
+
   const sectionMap = {
     verse: "── Verso", chorus: "── Coro", bridge: "── Puente",
     intro: "── Intro", outro: "── Outro", "pre-chorus": "── Pre-Coro",
@@ -949,19 +959,8 @@ function parseUltimateGuitarPage(html, title, artist) {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
-  // Detect capo from content header lines like "Capo 1st fret" or "Capo: 2"
-  let ugSemitones = 0;
-  const capoLine = text.match(/[Cc]apo[:\s]+(\d+)(?:st|nd|rd|th)?\s*(?:fret|traste)?/i);
-  if (capoLine) {
-    ugSemitones = parseInt(capoLine[1], 10);
-    console.log("[UG] capo detected:", ugSemitones);
-  }
-  // Also detect "Tuning: E A D G B E  Capo: 1st fret" format
-  const tuningCapo = text.match(/[Cc]apo[:\s]+(\d+)/i);
-  if (!ugSemitones && tuningCapo) {
-    ugSemitones = parseInt(tuningCapo[1], 10);
-    console.log("[UG] tuning-line capo detected:", ugSemitones);
-  }
+  // (capo already detected above from raw content)
+  // Also detect "Tuning: E A D G B E  Capo: 1st fret" format — already handled above
 
   if (ugSemitones) {
     // Strip chord diagram lines (X - XXXXXX) before transposing
