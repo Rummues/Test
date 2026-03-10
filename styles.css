@@ -269,21 +269,32 @@ html, body {
 }
 
 /* Chord sheet */
-.chord-sheet-pre {
-  margin: 0;
-  padding: 14px 14px;
+/* Wrapper that allows horizontal scroll within the chord card */
+.chord-sheet-wrap {
+  overflow-x: auto;
+  overflow-y: visible;
+  -webkit-overflow-scrolling: touch;
   border-radius: 14px;
   border: 1px solid var(--line);
   background: rgba(0,0,0,0.35);
+}
+
+.chord-sheet-pre {
+  margin: 0;
+  padding: 14px 14px;
   color: rgba(255,255,255,0.85);
   font-family: var(--mono);
   font-size: 13px;
   line-height: 1.9;
-  /* pre-wrap keeps alignment while still wrapping long lines */
-  white-space: pre-wrap;
-  word-break: break-word;
-  overflow-x: hidden;
-  width: 100%;
+  /* pre preserves chord alignment — horizontal scroll handles long lines */
+  white-space: pre;
+  word-break: normal;
+  overflow-x: visible;
+  width: max-content;
+  min-width: 100%;
+  background: transparent;
+  border: none;
+  border-radius: 0;
 }
 .chord-sheet-pre .chord {
   color: var(--chord-color);
