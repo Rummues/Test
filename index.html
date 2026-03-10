@@ -3,140 +3,115 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-  <title>Spotify Chords Board</title>
-  <meta name="description" content="Detección automática de acordes desde Spotify.">
+  <title>Chords</title>
   <link rel="stylesheet" href="./styles.css">
-  <style>
-    /* Dynamic album-art background */
-    #dynamic-bg {
-      position: fixed;
-      inset: -60px;
-      z-index: 0;
-      pointer-events: none;
-      background-size: cover;
-      background-position: center;
-      filter: blur(48px) brightness(0.45) saturate(1.4);
-      transition: background-image 0.8s ease;
-    }
-    #dynamic-bg::after {
-      content: "";
-      position: absolute;
-      inset: 0;
-      background: rgba(0,0,0,0.30);
-    }
-  </style>
 </head>
 <body>
-  <!-- Dynamic background layer -->
+  <!-- Dynamic blurred album art background -->
   <div id="dynamic-bg"></div>
-  <!-- Settings dropdown -->
-  <div id="settings-overlay" style="display:none" onclick="if(event.target===this)closeSettings()"></div>
+
+  <!-- Settings panel -->
+  <div id="settings-overlay" onclick="if(event.target===this)closeSettings()"></div>
   <div id="settings-panel">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
-      <strong style="font-size:15px">Cuenta Spotify</strong>
-      <button onclick="closeSettings()" style="background:none;border:none;color:#aaa;font-size:20px;cursor:pointer;padding:0">✕</button>
+    <div class="settings-header">
+      <span>Cuenta Spotify</span>
+      <button onclick="closeSettings()" class="settings-close">✕</button>
     </div>
-    <span class="status-pill" id="auth-status-pill" style="margin-bottom:14px;display:inline-block">Sin conectar</span>
-    <p id="auth-helper" style="font-size:12px;color:var(--soft);margin-bottom:16px;line-height:1.5"></p>
-    <div style="display:flex;gap:8px;flex-wrap:wrap">
+    <span class="status-pill" id="auth-status-pill">Sin conectar</span>
+    <p id="auth-helper" class="settings-helper"></p>
+    <div class="settings-btns">
       <button type="button" class="button button-primary" id="connect-btn">Conectar Spotify</button>
       <button type="button" class="button button-secondary" id="disconnect-btn">Desconectar</button>
     </div>
   </div>
-  <button id="gear-btn" onclick="openSettings()" title="Configuración">⚙</button>
+  <button id="gear-btn" onclick="openSettings()">⚙︎</button>
 
   <div class="page-shell">
 
-<main class="main-panel">
+    <!-- NOW PLAYING CARD -->
+    <section class="card now-playing-card">
+      <!-- Top: label + pill -->
+      <div class="np-top">
+        <span class="section-label">Now Playing</span>
+        <span class="status-pill status-pill-muted" id="playback-pill">Esperando</span>
+      </div>
 
-        <!-- Now Playing card -->
-        <section class="card now-playing-card">
-          <div class="card-head">
-            <div>
-              <p class="section-label">Now Playing</p>
-              <h2>Lo que Spotify está reproduciendo</h2>
-            </div>
-            <span class="status-pill status-pill-muted" id="playback-pill">Esperando</span>
-          </div>
+      <!-- Cover art — large -->
+      <div class="cover-wrap">
+        <div class="cover-art" id="cover-art">♫</div>
+      </div>
 
-          <div class="now-playing-shell">
-            <div class="cover-art" id="cover-art">SP</div>
-            <div class="track-meta">
-              <p class="track-kicker" id="track-kicker">Conecta Spotify para empezar</p>
-              <h3 class="track-title" id="track-title">Sin canción activa</h3>
-              <p class="track-line" id="track-artist">La app detecta la pista actual y busca acordes automáticamente.</p>
-              <p class="track-line track-album" id="track-album"></p>
+      <!-- Track info below cover -->
+      <div class="track-info">
+        <p class="track-kicker" id="track-kicker">Conecta Spotify para empezar</p>
+        <h2 class="track-title" id="track-title">Sin canción activa</h2>
+        <p class="track-artist" id="track-artist">—</p>
+        <p class="track-album" id="track-album"></p>
+      </div>
 
-              <div class="progress-block">
-                <div class="progress-labels">
-                  <span id="progress-left">0:00</span>
-                  <span id="progress-right">0:00</span>
-                </div>
-                <div class="progress-rail">
-                  <span id="progress-fill"></span>
-                </div>
-              </div>
+      <!-- Progress -->
+      <div class="progress-block">
+        <div class="progress-rail"><span id="progress-fill"></span></div>
+        <div class="progress-labels">
+          <span id="progress-left">0:00</span>
+          <span id="progress-right">0:00</span>
+        </div>
+      </div>
 
-              <div class="meta-row">
-                <span class="tiny-label" id="sync-label">Sin sincronizar</span>
-                <a id="spotify-link" class="inline-link hidden" href="#" target="_blank" rel="noreferrer">Abrir en Spotify</a>
-              </div>
-            </div>
-          </div>
-        </section>
+      <!-- Bottom meta -->
+      <div class="np-bottom">
+        <span class="tiny-label" id="sync-label">Sin sincronizar</span>
+        <a id="spotify-link" class="open-spotify hidden" href="#" target="_blank" rel="noreferrer">
+          Abrir en Spotify ↗
+        </a>
+      </div>
+    </section>
 
-        <!-- ★ CHORDS CARD ★ -->
-        <section class="card chords-card">
-          <div class="card-head">
-            <div>
-              <p class="section-label">Acordes</p>
-              <h2>Acordes de la canción actual</h2>
-            </div>
-            <span class="status-pill status-pill-muted" id="chords-pill">Esperando</span>
-          </div>
-          <div class="source-switcher" id="source-switcher" style="display:none"></div>
+    <!-- CHORDS CARD -->
+    <section class="card chords-card">
+      <div class="card-head">
+        <div>
+          <p class="section-label">Acordes</p>
+          <h2>Acordes de la canción</h2>
+        </div>
+        <span class="status-pill status-pill-muted" id="chords-pill">Esperando</span>
+      </div>
 
-          <div id="chords-key-badge" class="key-badge" style="display:none">
-            <span class="chords-key-val">—</span>
-            <span class="chords-tempo-val">—</span>
-          </div>
+      <div class="source-switcher" id="source-switcher" style="display:none"></div>
+      <div id="chords-key-badge" class="key-badge" style="display:none">
+        <span class="chords-key-val">—</span>
+        <span class="chords-tempo-val">—</span>
+      </div>
+      <div class="chords-chips-row" id="chords-chips-row"></div>
 
-          <div class="chords-chips-row" id="chords-chips-row"></div>
+      <div id="chords-sections">
+        <div class="chords-placeholder" id="chords-status-text">
+          Los acordes aparecerán aquí automáticamente.
+        </div>
+      </div>
+    </section>
 
-          <div class="scroll-controls" id="scroll-controls" style="display:none">
-            <!-- Scroll group -->
-            <button class="scroll-btn" id="scroll-slower" title="Más lento">−</button>
-            <button class="scroll-btn scroll-btn-toggle paused" id="scroll-toggle">▶ Auto</button>
-            <button class="scroll-btn" id="scroll-faster" title="Más rápido">+</button>
-            <span class="scroll-speed-label" id="scroll-speed-label">1×</span>
-            <!-- Separator -->
-            <span class="ctrl-sep"></span>
-            <!-- Transpose group -->
-            <button class="scroll-btn" id="transpose-down" title="Bajar semitono" style="font-size:13px">♭−</button>
-            <span class="scroll-speed-label" id="transpose-label" style="min-width:20px">0</span>
-            <button class="scroll-btn" id="transpose-up" title="Subir semitono" style="font-size:13px">♯+</button>
-            <!-- Separator -->
-            <span class="ctrl-sep"></span>
-            <!-- Enharmonic -->
-            <button class="scroll-btn" id="enharmonic-btn" title="Convertir ♭↔♯" style="font-size:11px;width:auto;padding:0 8px">♭↔♯</button>
-          </div>
-          <div class="scroll-controls-placeholder" id="scroll-controls-placeholder"></div>
+  </div><!-- /page-shell -->
 
-          <div id="chords-sections">
-            <div class="chords-placeholder" id="chords-status-text">
-              Los acordes aparecerán aquí automáticamente cuando detecte una canción.
-            </div>
-          </div>
-        </section>
+  <!-- Floating controls bar — fixed at bottom -->
+  <div class="ctrl-bar" id="scroll-controls" style="display:none">
+    <button class="ctrl-btn" id="scroll-slower">−</button>
+    <button class="ctrl-btn ctrl-play" id="scroll-toggle">▶ Auto</button>
+    <button class="ctrl-btn" id="scroll-faster">+</button>
+    <span class="ctrl-val" id="scroll-speed-label">1×</span>
+    <span class="ctrl-div"></span>
+    <button class="ctrl-btn" id="transpose-down">♭−</button>
+    <span class="ctrl-val" id="transpose-label">0</span>
+    <button class="ctrl-btn" id="transpose-up">♯+</button>
+    <span class="ctrl-div"></span>
+    <button class="ctrl-btn ctrl-enh" id="enharmonic-btn">♭↔♯</button>
+  </div>
+  <div class="scroll-controls-placeholder" id="scroll-controls-placeholder"></div>
 
-        <!-- Search deck card -->
+  <!-- FAB scroll top -->
+  <button id="scroll-top-fab">↑</button>
 
-
-      </main>
-      <!-- Scroll to top FAB -->
-  <button id="scroll-top-fab" aria-label="Volver al inicio" title="Volver al inicio">↑</button>
-
-  <!-- Hidden elements required by app.js -->
+  <!-- Hidden legacy inputs for app.js -->
   <input id="redirect-uri" type="hidden">
   <input id="spotify-client-id" type="hidden">
   <input id="worker-url" type="hidden">
