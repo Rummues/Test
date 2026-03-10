@@ -33,7 +33,7 @@ const state = {
   lastSyncAt: 0,
   pollTimer: null,
   progressTimer: null,
-  scroll: { speed: 1.0, userPaused: true, _rafId: null, _lastTime: null, _acc: 0 },
+  scroll: { speed: 1.0, userPaused: true, syncMode: false, _rafId: null, _lastTime: null, _acc: 0 },
   transpose: 0,
   enharmonic: false
 };
@@ -111,6 +111,14 @@ function bindEvents() {
   el.scrollFaster?.addEventListener("click", () => {
     state.scroll.speed = Math.min(4, +(state.scroll.speed + 0.25).toFixed(2));
     state.scroll.userPaused = false;
+    updateScrollUI();
+  });
+
+  // Song-sync scroll button
+  document.getElementById("sync-scroll-btn")?.addEventListener("click", () => {
+    state.scroll.syncMode   = !state.scroll.syncMode;
+    state.scroll.userPaused = false; // auto-start when enabling sync
+    state.scroll._lastTime  = null;
     updateScrollUI();
   });
   // Transpose controls
@@ -430,6 +438,7 @@ async function loadTrackResources(track, trackKey) {
   }, 200);
   if (el.chordsSections) el.chordsSections.scrollTop = 0;
   state.scroll.userPaused = true;
+  state.scroll.syncMode   = false;
   state.scroll._acc       = 0;
   state.scroll._lastTime  = null;
   state.enharmonic = false;
@@ -956,13 +965,26 @@ function parseUltimateGuitarPage(html, title, artist) {
   }
   console.log("[UG] raw content sample:", content.slice(0, 300));
 
-  // ── Detect capo BEFORE processing removes header lines ──
+  // ── Detect capo from BOTH tab content and page metadata ──
   let ugSemitones = 0;
-  const capoRaw = content.match(/[Cc]apo[:\s]+(\d+)(?:st|nd|rd|th)?\s*(?:fret|traste)?/i)
-               || content.match(/[Cc]ejilla[:\s]+(\d+)/i);
-  if (capoRaw) {
-    ugSemitones = parseInt(capoRaw[1], 10);
-    console.log("[UG] capo detected:", ugSemitones);
+
+  // Search the raw content first (English: "Capo 2nd fret")
+  const capoInContent = content.match(/[Cc]apo[:\s]+(\d+)(?:st|nd|rd|th)?\s*(?:fret|traste)?/i)
+                     || content.match(/[Cc]ejilla[:\s]+(\d+)/i);
+  if (capoInContent) {
+    ugSemitones = parseInt(capoInContent[1], 10);
+    console.log("[UG] capo from content:", ugSemitones);
+  }
+
+  // Also search the full page HTML for metadata like "Cejilla: 2o traste" or "Capo: 1st fret"
+  if (!ugSemitones) {
+    const capoInPage = html.match(/[Cc]ejilla[:\s]+(\d+)[oa°º]?\s*(?:traste)?/i)
+                    || html.match(/[Cc]apo[:\s]+(\d+)(?:st|nd|rd|th)?\s*(?:fret)?/i)
+                    || html.match(/"capo"\s*:\s*(\d+)/i);
+    if (capoInPage) {
+      ugSemitones = parseInt(capoInPage[1], 10);
+      console.log("[UG] capo from page metadata:", ugSemitones);
+    }
   }
 
   const sectionMap = {
@@ -1101,11 +1123,11 @@ function startProgressLoop() {
   startTeleprompterLoop();
 }
 
-// ─── Teleprompter — free scroll (constant px/sec, toggle on/off) ─
+// ─── Teleprompter — free scroll + song-sync mode ─────────────
 function startTeleprompterLoop() {
   if (state.scroll._rafId) cancelAnimationFrame(state.scroll._rafId);
-  state.scroll._lastTime  = null;
-  state.scroll._acc       = 0;   // sub-pixel accumulator for smoothness
+  state.scroll._lastTime = null;
+  state.scroll._acc      = 0;
 
   function tick(now) {
     state.scroll._rafId = requestAnimationFrame(tick);
@@ -1119,12 +1141,42 @@ function startTeleprompterLoop() {
     const dt = Math.min(now - state.scroll._lastTime, 100) / 1000;
     state.scroll._lastTime = now;
 
-    // Accumulate fractional pixels so low speeds don't jitter
-    state.scroll._acc += 40 * state.scroll.speed * dt;
-    const step = Math.floor(state.scroll._acc);
-    if (step < 1) return;                 // wait until we have ≥1 full pixel
-    state.scroll._acc -= step;
+    let pxPerSec;
 
+    if (state.scroll.syncMode) {
+      // ── Song-sync: calculate required px/sec from Spotify position ──
+      const track = state.currentTrack;
+      if (!track || !track.durationMs) {
+        // Fallback to free scroll if no track info
+        pxPerSec = 40 * state.scroll.speed;
+      } else {
+        const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+        const currentScroll = window.scrollY;
+        const remaining = scrollable - currentScroll;
+
+        // Estimate current playback position (interpolated since last poll)
+        const msSinceSync = Date.now() - state.lastSyncAt;
+        const estimatedMs = Math.min(
+          (state.currentTrack.progressMs || 0) + (track.isPlaying ? msSinceSync : 0),
+          track.durationMs
+        );
+        const msRemaining = Math.max(track.durationMs - estimatedMs, 1000);
+        const secRemaining = msRemaining / 1000;
+
+        // px/sec needed to reach bottom exactly when song ends
+        pxPerSec = remaining > 0 ? (remaining / secRemaining) : 0;
+
+        // Apply speed multiplier as fine-tuning on top of sync
+        pxPerSec *= state.scroll.speed;
+      }
+    } else {
+      pxPerSec = 40 * state.scroll.speed;
+    }
+
+    state.scroll._acc += pxPerSec * dt;
+    const step = Math.floor(state.scroll._acc);
+    if (step < 1) return;
+    state.scroll._acc -= step;
     window.scrollBy({ top: step, behavior: "instant" });
   }
 
@@ -1134,8 +1186,18 @@ function startTeleprompterLoop() {
 function updateScrollUI() {
   if (!el.scrollToggle) return;
   const paused = state.scroll.userPaused;
+  const sync   = state.scroll.syncMode;
+
   el.scrollToggle.textContent = paused ? "▶ Auto" : "■ Auto";
   el.scrollToggle.classList.toggle("paused", paused);
+
+  // Sync button state
+  const syncBtn = document.getElementById("sync-scroll-btn");
+  if (syncBtn) {
+    syncBtn.classList.toggle("active", sync);
+    syncBtn.title = sync ? "Sync con canción: ON" : "Sincronizar con duración de canción";
+  }
+
   if (el.scrollSpeedLabel) {
     el.scrollSpeedLabel.textContent = state.scroll.speed.toFixed(2).replace(/\.?0+$/, "") + "×";
   }
