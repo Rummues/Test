@@ -431,14 +431,13 @@ async function fetchSpotifyPlayback() {
 }
 
 async function loadTrackResources(track, trackKey) {
-  // On new song: scroll to chords card (not hard top), reset teleprompter
+  // On new song: scroll to top, reset teleprompter
   setTimeout(() => {
-    const target = el.chordsSections?.closest?.(".card") || document.querySelector(".chords-card");
-    if (target) target.scrollIntoView({ behavior: "smooth", block: "start" });
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }, 200);
   if (el.chordsSections) el.chordsSections.scrollTop = 0;
   state.scroll.userPaused = true;
-  // syncMode persists across songs intentionally — user keeps their preference
+  // syncMode persists across songs — recalibrate _acc and _lastTime
   state.scroll._acc       = 0;
   state.scroll._lastTime  = null;
   state.enharmonic = false;
@@ -1103,6 +1102,16 @@ async function fetchChordsForTrack(track, trackKey) {
     state.chordsSources = found;
     state.chordsSourceIdx = 0;
     showScrollControls(true);
+
+    // If sync mode is on, auto-resume scroll after DOM renders the chords
+    if (state.scroll.syncMode) {
+      setTimeout(() => {
+        state.scroll.userPaused = false;
+        state.scroll._acc       = 0;
+        state.scroll._lastTime  = null;
+        updateScrollUI();
+      }, 800); // wait for render + smooth scroll to settle
+    }
   } else {
     state.chordsTone = "warn";
     state.chordsText = "No encontrados";
@@ -1364,7 +1373,7 @@ function renderChords() {
         : data.content;
       if (state.enharmonic === "flat2sharp") displayed = flatToSharpText(displayed);
       else if (state.enharmonic === "sharp2flat") displayed = sharpToFlatText(displayed);
-      el.chordsSections.innerHTML = `<pre class="chord-sheet-pre">${highlightChords(escapeHtml(displayed))}</pre>`;
+      el.chordsSections.innerHTML = `<div class="chord-sheet-wrap"><pre class="chord-sheet-pre">${highlightChords(escapeHtml(displayed))}</pre></div>`;
     }
     return;
   }
