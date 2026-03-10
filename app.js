@@ -1343,6 +1343,116 @@ function renderSourceSwitcher() {
   });
 }
 
+// ── Chord sheet HTML renderer ─────────────────────────────────
+// Converts raw chord-over-lyric text into structured HTML where
+// chords float above the matching syllable. Lines wrap naturally
+// on mobile without ever misaligning chords and lyrics.
+
+const CHORD_TOKEN_RE = /[A-G][#b]?(?:M(?:aj)?|maj|min|dim|aug|sus[24]?|add)?[0-9]{0,2}(?:[#b][0-9]+)*(?:m(?:aj)?[0-9]?(?:[#b][0-9]+)?)?(?:\/[A-G][#b]?)?/g;
+
+function isChordOnlyLine(line) {
+  const stripped = line.trim();
+  if (!stripped) return false;
+  if (/^[\[—(─]/.test(stripped)) return false;
+  const tokens = stripped.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return false;
+  const re = /^[A-G][#b]?(?:M(?:aj)?|maj|min|dim|aug|sus[24]?|add)?[0-9]{0,2}(?:[#b][0-9]+)*(?:m(?:aj)?[0-9]?(?:[#b][0-9]+)?)?(?:\/[A-G][#b]?)?$/;
+  const chordCount = tokens.filter(t => re.test(t)).length;
+  return chordCount > 0 && chordCount / tokens.length >= 0.5;
+}
+
+function parseChordsFromLine(line) {
+  // Returns [{pos, chord}, ...]
+  const result = [];
+  let m;
+  const re = new RegExp(CHORD_TOKEN_RE.source, 'g');
+  while ((m = re.exec(line)) !== null) {
+    result.push({ pos: m.index, chord: m[0] });
+  }
+  return result;
+}
+
+function buildPairHTML(chordLine, lyricLine) {
+  const chords = parseChordsFromLine(chordLine);
+  if (!chords.length) return buildLyricLineHTML(lyricLine);
+
+  // Split lyric into segments, one per chord position
+  const segments = [];
+  for (let i = 0; i < chords.length; i++) {
+    const start = chords[i].pos;
+    const end   = i + 1 < chords.length ? chords[i + 1].pos : undefined;
+    const text  = end !== undefined
+      ? (lyricLine || '').slice(start, end)
+      : (lyricLine || '').slice(start);
+    segments.push({ chord: chords[i].chord, text });
+  }
+
+  // Text before the first chord
+  const prefix = (lyricLine || '').slice(0, chords[0].pos);
+
+  let html = '<span class="cs-pair">';
+  if (prefix) html += `<span class="cs-word">${escapeHtml(prefix)}</span>`;
+  for (const seg of segments) {
+    html += `<span class="cs-unit">` +
+      `<span class="cs-chord">${escapeHtml(seg.chord)}</span>` +
+      `<span class="cs-word">${escapeHtml(seg.text) || '\u00A0'}</span>` +
+      `</span>`;
+  }
+  html += '</span>';
+  return html;
+}
+
+function buildLyricLineHTML(line) {
+  if (!line.trim()) return '<div class="cs-blank"></div>';
+  // Section header
+  if (/^[\[—(─]/.test(line.trim()) || /^──/.test(line.trim())) {
+    return `<div class="cs-section">${escapeHtml(line.trim())}</div>`;
+  }
+  return `<div class="cs-lyric">${escapeHtml(line)}</div>`;
+}
+
+function buildChordSheetHTML(text) {
+  const lines  = text.split('\n');
+  let html     = '';
+  let i        = 0;
+
+  while (i < lines.length) {
+    const line     = lines[i];
+    const nextLine = lines[i + 1];
+
+    if (!line.trim()) {
+      html += '<div class="cs-blank"></div>';
+      i++;
+      continue;
+    }
+
+    // Section header lines
+    if (/^[\[—(─]/.test(line.trim()) || /^──/.test(line.trim())) {
+      html += `<div class="cs-section">${escapeHtml(line.trim())}</div>`;
+      i++;
+      continue;
+    }
+
+    if (isChordOnlyLine(line)) {
+      // Peek ahead: if next non-empty line is a lyric line, pair them
+      if (nextLine !== undefined && !isChordOnlyLine(nextLine) && nextLine.trim()
+          && !/^[\[—(─]/.test(nextLine.trim()) && !/^──/.test(nextLine.trim())) {
+        html += `<div class="cs-row">${buildPairHTML(line, nextLine)}</div>`;
+        i += 2;
+      } else {
+        // Chord-only line with no paired lyric
+        html += `<div class="cs-row cs-chords-only">${buildPairHTML(line, '')}</div>`;
+        i++;
+      }
+    } else {
+      html += buildLyricLineHTML(line);
+      i++;
+    }
+  }
+
+  return html;
+}
+
 function renderChords() {
   if (!el.chordsPill) return;
 
@@ -1365,7 +1475,7 @@ function renderChords() {
     return;
   }
 
-  // ── Plain-text chord sheet ──
+  // ── Plain-text chord sheet — structured HTML renderer ──
   if (data.type === "text") {
     if (el.chordsSections) {
       let displayed = state.transpose
@@ -1373,7 +1483,7 @@ function renderChords() {
         : data.content;
       if (state.enharmonic === "flat2sharp") displayed = flatToSharpText(displayed);
       else if (state.enharmonic === "sharp2flat") displayed = sharpToFlatText(displayed);
-      el.chordsSections.innerHTML = `<div class="chord-sheet-wrap"><pre class="chord-sheet-pre">${highlightChords(escapeHtml(displayed))}</pre></div>`;
+      el.chordsSections.innerHTML = `<div class="chord-sheet">${buildChordSheetHTML(displayed)}</div>`;
     }
     return;
   }
