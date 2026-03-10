@@ -390,17 +390,20 @@ html, body {
 
 /* Song-sync button */
 .ctrl-sync {
-  width: auto;
+  width: auto !important;
+  min-width: 52px;
   padding: 0 10px;
+  height: 30px;
   font-size: 12px;
   font-weight: 600;
   letter-spacing: -0.01em;
+  border-radius: 999px;
+  flex-shrink: 0;
 }
 .ctrl-sync.active {
-  color: #ffd60a; /* yellow = synced */
-  background: rgba(255,214,10,0.12);
-  border-radius: 999px;
-  border: 1px solid rgba(255,214,10,0.25);
+  color: #ffd60a;
+  background: rgba(255,214,10,0.14);
+  border: 1px solid rgba(255,214,10,0.28);
 }
 
 .ctrl-val {
