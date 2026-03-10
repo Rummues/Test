@@ -438,7 +438,7 @@ async function loadTrackResources(track, trackKey) {
   }, 200);
   if (el.chordsSections) el.chordsSections.scrollTop = 0;
   state.scroll.userPaused = true;
-  state.scroll.syncMode   = false;
+  // syncMode persists across songs intentionally — user keeps their preference
   state.scroll._acc       = 0;
   state.scroll._lastTime  = null;
   state.enharmonic = false;
@@ -965,25 +965,45 @@ function parseUltimateGuitarPage(html, title, artist) {
   }
   console.log("[UG] raw content sample:", content.slice(0, 300));
 
-  // ── Detect capo from BOTH tab content and page metadata ──
+  // ── Detect capo — check JSON metadata first (most reliable) ──
   let ugSemitones = 0;
+  let capoLabel = "";
 
-  // Search the raw content first (English: "Capo 2nd fret")
-  const capoInContent = content.match(/[Cc]apo[:\s]+(\d+)(?:st|nd|rd|th)?\s*(?:fret|traste)?/i)
-                     || content.match(/[Cc]ejilla[:\s]+(\d+)/i);
-  if (capoInContent) {
-    ugSemitones = parseInt(capoInContent[1], 10);
-    console.log("[UG] capo from content:", ugSemitones);
+  // 1. Check UG JSON fields: tab_view.meta.capo, tab.capo, etc.
+  const tabData  = json?.store?.page?.data?.tab_view?.tab
+                || json?.store?.page?.data?.tab;
+  const metaData = json?.store?.page?.data?.tab_view?.meta
+                || json?.store?.page?.data?.meta;
+
+  const jsonCapo = tabData?.capo ?? metaData?.capo ?? null;
+  if (jsonCapo && parseInt(jsonCapo) > 0) {
+    ugSemitones = parseInt(jsonCapo);
+    capoLabel = `Cejilla ${ugSemitones}`;
+    console.log("[UG] capo from JSON field:", ugSemitones);
   }
 
-  // Also search the full page HTML for metadata like "Cejilla: 2o traste" or "Capo: 1st fret"
+  // 2. Search the full HTML for "Cejilla:2o traste" or "Capo: 2nd fret"
   if (!ugSemitones) {
-    const capoInPage = html.match(/[Cc]ejilla[:\s]+(\d+)[oa°º]?\s*(?:traste)?/i)
+    const capoInHtml = html.match(/[Cc]ejilla[:\s]*(\d+)[oa°º]?\s*(?:traste)?/i)
+                    || html.match(/[Cc]apo\s+[Oo][Nn]\s+(\d+)/i)
                     || html.match(/[Cc]apo[:\s]+(\d+)(?:st|nd|rd|th)?\s*(?:fret)?/i)
-                    || html.match(/"capo"\s*:\s*(\d+)/i);
-    if (capoInPage) {
-      ugSemitones = parseInt(capoInPage[1], 10);
-      console.log("[UG] capo from page metadata:", ugSemitones);
+                    || html.match(/"capo"\s*:\s*"?(\d+)"?/i);
+    if (capoInHtml && parseInt(capoInHtml[1]) > 0) {
+      ugSemitones = parseInt(capoInHtml[1]);
+      capoLabel = `Cejilla ${ugSemitones}`;
+      console.log("[UG] capo from HTML:", ugSemitones);
+    }
+  }
+
+  // 3. Fallback: search inside tab content text itself
+  if (!ugSemitones) {
+    const capoInContent = content.match(/[Cc]apo\s+[Oo][Nn]\s+(\d+)/i)
+                       || content.match(/[Cc]apo[:\s]+(\d+)(?:st|nd|rd|th)?/i)
+                       || content.match(/[Cc]ejilla[:\s]+(\d+)/i);
+    if (capoInContent && parseInt(capoInContent[1]) > 0) {
+      ugSemitones = parseInt(capoInContent[1]);
+      capoLabel = `Cejilla ${ugSemitones}`;
+      console.log("[UG] capo from content text:", ugSemitones);
     }
   }
 
@@ -1012,19 +1032,18 @@ function parseUltimateGuitarPage(html, title, artist) {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
-  // (capo already detected above from raw content)
-  // Also detect "Tuning: E A D G B E  Capo: 1st fret" format — already handled above
+  // (capo already detected above)
 
   if (ugSemitones) {
-    // Strip chord diagram lines (X - XXXXXX) before transposing
     const lines = text.split("\n");
     const transposed = lines.map(line => {
-      // Diagram lines: "Am - x02210" or "G   - 32000x" — skip transposing those
       if (/^[A-G][#b]?[\w\/]*\s*-\s*[x\d]+/i.test(line.trim())) return line;
       return applyTransposeToSheet(line, ugSemitones);
     });
     text = transposed.join("\n");
-    text = `[Capo ${ugSemitones} — acordes transpuestos automáticamente]\n\n` + text;
+    text = `[${capoLabel} — acordes transpuestos automáticamente]\n\n` + text;
+  } else {
+    text = `[Sin cejilla]\n\n` + text;
   }
 
   if (!text || text.length < 20) throw new Error("UG: contenido vacío");
