@@ -269,37 +269,87 @@ html, body {
 }
 
 /* Chord sheet */
-/* Wrapper that allows horizontal scroll within the chord card */
-.chord-sheet-wrap {
-  overflow-x: auto;
-  overflow-y: visible;
-  -webkit-overflow-scrolling: touch;
+/* ── Chord sheet — structured HTML ──────────────────────────── */
+.chord-sheet {
+  padding: 14px;
   border-radius: 14px;
   border: 1px solid var(--line);
   background: rgba(0,0,0,0.35);
-}
-
-.chord-sheet-pre {
-  margin: 0;
-  padding: 14px 14px;
-  color: rgba(255,255,255,0.85);
   font-family: var(--mono);
   font-size: 13px;
-  line-height: 1.9;
-  /* pre preserves chord alignment — horizontal scroll handles long lines */
-  white-space: pre;
-  word-break: normal;
-  overflow-x: visible;
-  width: max-content;
-  min-width: 100%;
-  background: transparent;
-  border: none;
-  border-radius: 0;
+  line-height: 1.5;
+  color: rgba(255,255,255,0.85);
 }
-.chord-sheet-pre .chord {
+
+/* A row contains one chord+lyric pair, wraps naturally */
+.cs-row {
+  display: block;
+  margin-bottom: 2px;
+}
+
+/* The inline pair — allows wrapping */
+.cs-pair {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  row-gap: 0;
+}
+
+/* One chord-above-word unit */
+.cs-unit {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  margin-right: 2px;
+}
+
+/* The chord name */
+.cs-chord {
   color: var(--chord-color);
   font-weight: 800;
+  font-size: 13px;
+  line-height: 1.3;
+  white-space: nowrap;
   transition: color 0.8s ease;
+  min-width: 1ch;
+}
+
+/* The lyric word(s) beneath the chord */
+.cs-word {
+  color: rgba(255,255,255,0.85);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre;
+}
+
+/* Chord-only row (no paired lyric) */
+.cs-chords-only .cs-chord {
+  margin-bottom: 4px;
+}
+.cs-chords-only .cs-word {
+  display: none;
+}
+
+/* Standalone lyric line */
+.cs-lyric {
+  color: rgba(255,255,255,0.85);
+  font-size: 13px;
+  line-height: 1.7;
+  margin-bottom: 2px;
+}
+
+/* Section header */
+.cs-section {
+  color: rgba(255,255,255,0.40);
+  font-size: 12px;
+  font-weight: 600;
+  margin: 14px 0 8px;
+  letter-spacing: 0.03em;
+}
+
+/* Blank spacer line */
+.cs-blank {
+  height: 10px;
 }
 
 .chords-placeholder {
