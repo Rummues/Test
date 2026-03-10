@@ -2,307 +2,15 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Spotify Chords Board</title>
   <meta name="description" content="Detección automática de acordes desde Spotify.">
   <link rel="stylesheet" href="./styles.css">
   <style>
-    /* ── Mobile responsive fixes ── */
-    html, body {
-      overflow-x: hidden;
-      max-width: 100vw;
-    }
-    @media (max-width: 600px) {
-      .chord-sheet-pre { font-size: 11px; line-height: 1.5; }
-      .card { padding: 14px 12px; border-radius: 12px; }
-      h2 { font-size: 1rem; }
-      .section-label { font-size: 10px; }
-      .status-pill { font-size: 10px; padding: 3px 8px; }
-      .scroll-btn { width: 30px; height: 30px; font-size: 15px; }
-      .scroll-btn-toggle { padding: 0 10px; font-size: 11px; }
-      .now-playing-art { width: 52px; height: 52px; }
-      body { padding: 0; }
-      .app-shell { padding: 10px 8px; gap: 10px; }
-    }
-
-    /* ── Chords card extra styles ── */
-    .chords-card { }
-
-    .key-badge {
-      display: inline-flex;
-      align-items: baseline;
-      gap: 10px;
-      padding: 8px 16px;
-      border-radius: 999px;
-      border: 1px solid var(--line-strong);
-      background: rgba(255,255,255,0.05);
-      margin-bottom: 16px;
-    }
-    .chords-key-val {
-      font-family: var(--display);
-      font-size: 1.4rem;
-      font-weight: 700;
-      color: var(--accent);
-      letter-spacing: -0.03em;
-    }
-    .chords-tempo-val {
-      font-size: 12px;
-      color: var(--soft);
-      letter-spacing: 0.05em;
-    }
-
-    .chords-chips-row {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-bottom: 22px;
-    }
-    .chord-chip {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      min-width: 48px;
-      padding: 8px 14px;
-      border-radius: 12px;
-      border: 1px solid var(--line-strong);
-      background: rgba(10,132,255,0.1);
-      color: #8bc1ff;
-      font-family: var(--mono);
-      font-size: 15px;
-      font-weight: 600;
-      letter-spacing: 0.02em;
-    }
-
-    .chord-section {
-      margin-bottom: 28px;
-    }
-    .section-label-chip {
-      display: inline-block;
-      padding: 3px 10px;
-      border-radius: 6px;
-      background: rgba(48,209,88,0.12);
-      border: 1px solid rgba(48,209,88,0.2);
-      color: #7dffb0;
-      font-size: 11px;
-      font-weight: 700;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      margin-bottom: 12px;
-    }
-
-    .lyric-line {
-      margin-bottom: 10px;
-    }
-    .chords-row, .text-row {
-      display: flex;
-      flex-wrap: nowrap;
-    }
-    .chords-row { margin-bottom: 1px; }
-    .line-slot {
-      min-width: 60px;
-      display: inline-block;
-    }
-    .chord-label {
-      font-family: var(--mono);
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--accent);
-      padding: 0 2px;
-    }
-    .lyric-word {
-      font-size: 14px;
-      color: var(--text);
-      padding: 0 2px;
-      line-height: 1.6;
-    }
-
-    .chords-placeholder {
-      padding: 32px;
-      text-align: center;
-      color: var(--muted);
-      font-size: 14px;
-      line-height: 1.7;
-    }
-
-    .api-key-hint {
-      margin: 8px 0 0;
-      font-size: 12px;
-      color: var(--soft);
-      line-height: 1.6;
-    }
-    .api-key-hint a { color: #9fcbff; text-decoration: none; font-weight: 600; }
-    .api-key-hint a:hover { text-decoration: underline; }
-
-    /* Chord highlighting in pre sheets */
-    .chord-sheet-pre .chord { color: #b5ff4d; font-weight: 800; letter-spacing: 0.03em; }
-    .scroll-btn.active { background: var(--accent-2); color: #000; border-color: var(--accent-2); }
-
-    /* Source switcher — inline flow, wraps on small screens */
-    .source-switcher {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: 6px;
-      margin-bottom: 10px;
-    }
-    .source-btn {
-      background: rgba(255,255,255,0.07);
-      border: 1px solid var(--line);
-      color: var(--fg);
-      border-radius: 20px;
-      padding: 4px 10px;
-      font-size: 11px;
-      cursor: pointer;
-      white-space: nowrap;
-      transition: background 0.15s, border-color 0.15s;
-    }
-    .source-btn:hover { background: rgba(255,255,255,0.13); }
-    .source-btn.active { border-color: var(--accent-1); color: var(--accent-1); }
-
-    /* Teleprompter scroll controls — always fixed at top when visible */
-    .scroll-controls {
-      display: none;
-      align-items: center;
-      gap: 6px;
-      flex-wrap: wrap;
-      position: fixed;
-      top: 8px;
-      left: 50%;
-      transform: translateX(-50%);
-      z-index: 500;
-      background: rgba(13, 17, 23, 0.95);
-      backdrop-filter: blur(16px);
-      -webkit-backdrop-filter: blur(16px);
-      border-radius: 20px;
-      padding: 10px 14px;
-      border: 1px solid rgba(255,255,255,0.12);
-      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-      white-space: nowrap;
-      box-sizing: border-box;
-      max-width: calc(100vw - 24px);
-    }
-    .scroll-controls-placeholder {
-      display: none;
-    }
-    .scroll-btn {
-      background: rgba(255,255,255,0.07);
-      border: 1px solid var(--line);
-      color: var(--fg);
-      border-radius: 8px;
-      width: 36px; height: 36px;
-      font-size: 18px;
-      cursor: pointer;
-      display: flex; align-items: center; justify-content: center;
-      transition: background 0.15s;
-    }
-    .scroll-btn:hover { background: rgba(255,255,255,0.13); }
-    .scroll-btn-toggle {
-      width: auto;
-      padding: 0 14px;
-      font-size: 13px;
-      gap: 4px;
-    }
-    .scroll-btn-toggle.paused { color: var(--accent-2); border-color: var(--accent-2); }
-    .scroll-speed-label {
-      font-size: 12px;
-      color: var(--muted);
-      min-width: 28px;
-    }
-
-    /* Groq plain-text chord sheet */
-    .chord-sheet-pre {
-      margin: 0;
-      min-height: unset;
-      padding: 16px;
-      border-radius: 16px;
-      border: 1px solid var(--line);
-      background: rgba(7,10,14,0.6);
-      color: #e8f0fe;
-      font-family: var(--mono);
-      font-size: 13px;
-      line-height: 2;
-      white-space: pre-wrap;       /* wrap long lines — no horizontal scroll */
-      word-break: break-word;
-      overflow-x: hidden;
-      width: 100%;
-      box-sizing: border-box;
-    }
-    /* Scroll-to-top FAB */
-    #scroll-top-fab {
-      position: fixed;
-      bottom: 24px;
-      right: 20px;
-      width: 46px;
-      height: 46px;
-      border-radius: 50%;
-      background: rgba(30,34,45,0.92);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
-      border: 1px solid rgba(255,255,255,0.15);
-      color: #fff;
-      font-size: 20px;
-      cursor: pointer;
-      box-shadow: 0 4px 20px rgba(0,0,0,0.5);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      transition: opacity 0.2s, transform 0.2s;
-      z-index: 999;
-    }
-    #scroll-top-fab.visible {
-      display: flex;
-    }
-    #scroll-top-fab:hover { transform: scale(1.1); }
-
-    /* ── Gear button + Settings panel ── */
-    #gear-btn {
-      position: fixed;
-      top: 12px;
-      left: 12px;
-      z-index: 600;
-      width: 38px;
-      height: 38px;
-      border-radius: 50%;
-      background: rgba(20,24,32,0.88);
-      backdrop-filter: blur(10px);
-      -webkit-backdrop-filter: blur(10px);
-      border: 1px solid rgba(255,255,255,0.12);
-      color: #ccc;
-      font-size: 18px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      box-shadow: 0 2px 12px rgba(0,0,0,0.4);
-      transition: transform 0.2s;
-    }
-    #gear-btn:hover { transform: rotate(30deg); }
-
-    #settings-overlay {
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.5);
-      z-index: 700;
-      backdrop-filter: blur(4px);
-    }
-    #settings-panel {
-      position: fixed;
-      top: 60px;
-      left: 12px;
-      width: min(320px, calc(100vw - 24px));
-      background: rgba(18,22,32,0.98);
-      border: 1px solid rgba(255,255,255,0.12);
-      border-radius: 16px;
-      padding: 18px;
-      z-index: 800;
-      box-shadow: 0 12px 40px rgba(0,0,0,0.6);
-      display: none;
-    }
-    #settings-panel.open { display: block; }
     /* Dynamic album-art background */
     #dynamic-bg {
       position: fixed;
-      inset: -60px; /* oversized to avoid blur edges */
+      inset: -60px;
       z-index: 0;
       pointer-events: none;
       background-size: cover;
@@ -310,14 +18,12 @@
       filter: blur(48px) brightness(0.45) saturate(1.4);
       transition: background-image 0.8s ease;
     }
-    /* Dark overlay so text stays readable */
     #dynamic-bg::after {
       content: "";
       position: absolute;
       inset: 0;
-      background: rgba(0, 0, 0, 0.35);
+      background: rgba(0,0,0,0.30);
     }
-    .page-shell { position: relative; z-index: 1; }
   </style>
 </head>
 <body>
@@ -398,16 +104,21 @@
           <div class="chords-chips-row" id="chords-chips-row"></div>
 
           <div class="scroll-controls" id="scroll-controls" style="display:none">
-            <button class="scroll-btn" id="scroll-slower" title="Scroll más lento">−</button>
-            <button class="scroll-btn scroll-btn-toggle" id="scroll-toggle" title="Pausar/reanudar scroll">▶ Auto</button>
-            <button class="scroll-btn" id="scroll-faster" title="Scroll más rápido">+</button>
+            <!-- Scroll group -->
+            <button class="scroll-btn" id="scroll-slower" title="Más lento">−</button>
+            <button class="scroll-btn scroll-btn-toggle paused" id="scroll-toggle">▶ Auto</button>
+            <button class="scroll-btn" id="scroll-faster" title="Más rápido">+</button>
             <span class="scroll-speed-label" id="scroll-speed-label">1×</span>
-            <span style="width:1px;background:var(--line);height:22px;margin:0 4px;display:inline-block"></span>
-            <button class="scroll-btn" id="transpose-down" title="Bajar semitono">♭</button>
-            <span class="scroll-speed-label" id="transpose-label" style="min-width:36px;text-align:center">0</span>
-            <button class="scroll-btn" id="transpose-up" title="Subir semitono">♯</button>
-            <span style="width:1px;background:var(--line);height:22px;margin:0 4px;display:inline-block"></span>
-            <button class="scroll-btn" id="enharmonic-btn" title="Convertir bemoles↔sostenidos (Bb siempre se mantiene)">♭↔♯</button>
+            <!-- Separator -->
+            <span class="ctrl-sep"></span>
+            <!-- Transpose group -->
+            <button class="scroll-btn" id="transpose-down" title="Bajar semitono" style="font-size:13px">♭−</button>
+            <span class="scroll-speed-label" id="transpose-label" style="min-width:20px">0</span>
+            <button class="scroll-btn" id="transpose-up" title="Subir semitono" style="font-size:13px">♯+</button>
+            <!-- Separator -->
+            <span class="ctrl-sep"></span>
+            <!-- Enharmonic -->
+            <button class="scroll-btn" id="enharmonic-btn" title="Convertir ♭↔♯" style="font-size:11px;width:auto;padding:0 8px">♭↔♯</button>
           </div>
           <div class="scroll-controls-placeholder" id="scroll-controls-placeholder"></div>
 
