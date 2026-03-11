@@ -5,51 +5,100 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Chords</title>
   <link rel="stylesheet" href="./styles.css">
+  <!-- QR Code library -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 <body>
-  <!-- Dynamic blurred album art background -->
   <div id="dynamic-bg"></div>
 
-  <!-- Settings panel -->
+  <!-- ── Settings panel ─────────────────────── -->
   <div id="settings-overlay" onclick="if(event.target===this)closeSettings()"></div>
   <div id="settings-panel">
     <div class="settings-header">
-      <span>Cuenta Spotify</span>
+      <span>Configuración</span>
       <button onclick="closeSettings()" class="settings-close">✕</button>
     </div>
-    <span class="status-pill" id="auth-status-pill">Sin conectar</span>
-    <p id="auth-helper" class="settings-helper"></p>
-    <div class="settings-btns">
-      <button type="button" class="button button-primary" id="connect-btn">Conectar Spotify</button>
-      <button type="button" class="button button-secondary" id="disconnect-btn">Desconectar</button>
+
+    <!-- Account -->
+    <div class="settings-group">
+      <p class="settings-group-title">Spotify</p>
+      <span class="status-pill" id="auth-status-pill">Sin conectar</span>
+      <p id="auth-helper" class="settings-helper"></p>
+      <div class="settings-btns">
+        <button type="button" class="button button-primary" id="connect-btn">Conectar</button>
+        <button type="button" class="button button-secondary" id="disconnect-btn">Desconectar</button>
+      </div>
+    </div>
+
+    <!-- Instrument -->
+    <div class="settings-group">
+      <p class="settings-group-title">Instrumento (diagramas)</p>
+      <div class="settings-seg">
+        <button class="settings-seg-btn active" id="instr-guitar" onclick="setInstrument('guitar')">🎸 Guitarra</button>
+        <button class="settings-seg-btn" id="instr-piano" onclick="setInstrument('piano')">🎹 Piano</button>
+      </div>
+    </div>
+
+    <!-- Font size -->
+    <div class="settings-group">
+      <p class="settings-group-title">Tamaño de acordes</p>
+      <div class="settings-font-row">
+        <button class="settings-font-btn" onclick="changeFontSize(-1)">A−</button>
+        <span id="font-size-label">13px</span>
+        <button class="settings-font-btn" onclick="changeFontSize(1)">A+</button>
+      </div>
+    </div>
+
+    <!-- Stats -->
+    <div class="settings-group">
+      <p class="settings-group-title">Estadísticas</p>
+      <div id="stats-display" class="stats-display"></div>
     </div>
   </div>
   <button id="gear-btn" onclick="openSettings()">⚙︎</button>
+
+  <!-- ── Chord diagram modal ─────────────────── -->
+  <div id="diagram-overlay" onclick="closeDiagram()"></div>
+  <div id="diagram-modal">
+    <div class="diagram-header">
+      <span id="diagram-chord-name">—</span>
+      <div class="diagram-tabs" id="diagram-tabs"></div>
+      <button onclick="closeDiagram()" class="settings-close">✕</button>
+    </div>
+    <div id="diagram-content"></div>
+    <p id="diagram-key-hint" class="diagram-key-hint"></p>
+  </div>
+
+  <!-- ── QR / Share modal ───────────────────── -->
+  <div id="qr-overlay" onclick="closeQR()"></div>
+  <div id="qr-modal">
+    <div class="settings-header">
+      <span>Compartir acordes</span>
+      <button onclick="closeQR()" class="settings-close">✕</button>
+    </div>
+    <div id="qr-canvas"></div>
+    <p id="qr-song-label" class="qr-song-label"></p>
+    <p class="qr-hint">Abre esta URL en otro dispositivo para ver los mismos acordes</p>
+    <button class="button button-secondary" style="width:100%;margin-top:8px" onclick="copyShareUrl()">Copiar enlace</button>
+  </div>
 
   <div class="page-shell">
 
     <!-- NOW PLAYING CARD -->
     <section class="card now-playing-card">
-      <!-- Top: label + pill -->
       <div class="np-top">
         <span class="section-label">Now Playing</span>
         <span class="status-pill status-pill-muted" id="playback-pill">Esperando</span>
       </div>
-
-      <!-- Cover art — large -->
       <div class="cover-wrap">
         <div class="cover-art" id="cover-art">♫</div>
       </div>
-
-      <!-- Track info below cover -->
       <div class="track-info">
         <p class="track-kicker" id="track-kicker">Conecta Spotify para empezar</p>
         <h2 class="track-title" id="track-title">Sin canción activa</h2>
         <p class="track-artist" id="track-artist">—</p>
         <p class="track-album" id="track-album"></p>
       </div>
-
-      <!-- Progress -->
       <div class="progress-block">
         <div class="progress-rail"><span id="progress-fill"></span></div>
         <div class="progress-labels">
@@ -57,13 +106,9 @@
           <span id="progress-right">0:00</span>
         </div>
       </div>
-
-      <!-- Bottom meta -->
       <div class="np-bottom">
         <span class="tiny-label" id="sync-label">Sin sincronizar</span>
-        <a id="spotify-link" class="open-spotify hidden" href="#" target="_blank" rel="noreferrer">
-          Abrir en Spotify ↗
-        </a>
+        <a id="spotify-link" class="open-spotify hidden" href="#" target="_blank" rel="noreferrer">Abrir en Spotify ↗</a>
       </div>
     </section>
 
@@ -74,7 +119,11 @@
           <p class="section-label">Acordes</p>
           <h2>Acordes de la canción</h2>
         </div>
-        <span class="status-pill status-pill-muted" id="chords-pill">Esperando</span>
+        <div class="card-head-actions">
+          <span class="key-badge-inline" id="key-badge-inline" style="display:none"></span>
+          <button class="head-icon-btn" id="share-btn" title="Compartir acordes" onclick="showQR()" style="display:none">⬡</button>
+          <span class="status-pill status-pill-muted" id="chords-pill">Esperando</span>
+        </div>
       </div>
 
       <div class="source-switcher" id="source-switcher" style="display:none"></div>
@@ -91,29 +140,29 @@
       </div>
     </section>
 
-  </div><!-- /page-shell -->
+  </div>
 
-    <!-- Floating controls bar — fixed at bottom -->
+  <!-- Floating controls bar -->
   <div class="ctrl-bar" id="scroll-controls" style="display:none">
-    <button class="ctrl-btn" id="scroll-slower" title="Más lento">−</button>
+    <button class="ctrl-btn" id="scroll-slower">−</button>
     <button class="ctrl-btn ctrl-play paused" id="scroll-toggle">&#x25B6; Auto</button>
-    <button class="ctrl-btn" id="scroll-faster" title="Más rápido">+</button>
+    <button class="ctrl-btn" id="scroll-faster">+</button>
     <span class="ctrl-val" id="scroll-speed-label">1×</span>
     <span class="ctrl-div"></span>
-    <button class="ctrl-btn ctrl-sync" id="sync-scroll-btn" title="Sincronizar con duración de canción">♫ Sync</button>
+    <button class="ctrl-btn ctrl-sync" id="sync-scroll-btn" title="Sync con canción">♫ Sync</button>
+    <button class="ctrl-btn ctrl-bpm" id="bpm-scroll-btn" title="Sync por BPM" style="display:none">♩BPM</button>
     <span class="ctrl-div"></span>
-    <button class="ctrl-btn" id="transpose-down" title="Bajar semitono" style="font-size:12px;letter-spacing:-0.5px">−½</button>
+    <button class="ctrl-btn" id="transpose-down" style="font-size:12px">−½</button>
     <span class="ctrl-val" id="transpose-label">0</span>
-    <button class="ctrl-btn" id="transpose-up" title="Subir semitono" style="font-size:12px;letter-spacing:-0.5px">+½</button>
+    <button class="ctrl-btn" id="transpose-up" style="font-size:12px">+½</button>
     <span class="ctrl-div"></span>
-    <button class="ctrl-btn ctrl-enh" id="enharmonic-btn" title="Convertir bemoles a sostenidos">b↔#</button>
+    <button class="ctrl-btn ctrl-enh" id="enharmonic-btn">b↔#</button>
   </div>
   <div class="scroll-controls-placeholder" id="scroll-controls-placeholder"></div>
 
-  <!-- FAB scroll top -->
   <button id="scroll-top-fab">↑</button>
 
-  <!-- Hidden legacy inputs for app.js -->
+  <!-- Hidden legacy inputs -->
   <input id="redirect-uri" type="hidden">
   <input id="spotify-client-id" type="hidden">
   <input id="worker-url" type="hidden">
