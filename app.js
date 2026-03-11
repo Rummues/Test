@@ -8,8 +8,11 @@ const HARDCODED_WORKER_URL = "https://test.millervicente.workers.dev";
 // ─────────────────────────────────────────────────────────────
 
 const STORAGE_KEYS = {
-  settings: "spotify-chords.settings.v5",
-  tokens:   "spotify-chords.tokens.v5"
+  settings:   "spotify-chords.settings.v5",
+  tokens:     "spotify-chords.tokens.v5",
+  stats:      "spotify-chords.stats.v1",
+  fontSize:   "spotify-chords.fontsize.v1",
+  instrument: "spotify-chords.instrument.v1",
 };
 
 const SPOTIFY_SCOPES = ["user-read-currently-playing", "user-read-playback-state"];
@@ -33,9 +36,16 @@ const state = {
   lastSyncAt: 0,
   pollTimer: null,
   progressTimer: null,
-  scroll: { speed: 1.0, userPaused: true, syncMode: false, _rafId: null, _lastTime: null, _acc: 0 },
+  scroll: { speed: 1.0, userPaused: true, syncMode: false, bpmMode: false, _rafId: null, _lastTime: null, _acc: 0 },
   transpose: 0,
-  enharmonic: false
+  enharmonic: false,
+  // New features
+  bpm: null,
+  detectedKey: null,
+  prevIsPlaying: null,
+  chordFontSize: 13,
+  instrument: "guitar",
+  shareMode: false,
 };
 
 const el = {};
@@ -44,6 +54,7 @@ const el = {};
 function openSettings() {
   document.getElementById("settings-panel").classList.add("open");
   document.getElementById("settings-overlay").style.display = "block";
+  renderStats();
 }
 function closeSettings() {
   document.getElementById("settings-panel").classList.remove("open");
@@ -56,9 +67,11 @@ async function boot() {
   cacheElements();
   bindEvents();
   hydrateState();
+  loadUserPrefs();
   renderAll();
+  await checkShareMode();
   await maybeFinishSpotifyLogin();
-  if (state.tokens) startSpotifyPolling();
+  if (state.tokens && !state.shareMode) startSpotifyPolling();
   else startProgressLoop();
 }
 
@@ -117,7 +130,17 @@ function bindEvents() {
   // Song-sync scroll button
   document.getElementById("sync-scroll-btn")?.addEventListener("click", () => {
     state.scroll.syncMode   = !state.scroll.syncMode;
-    state.scroll.userPaused = false; // auto-start when enabling sync
+    state.scroll.bpmMode    = false; // mutual exclusion
+    state.scroll.userPaused = false;
+    state.scroll._lastTime  = null;
+    updateScrollUI();
+  });
+
+  // BPM scroll button
+  document.getElementById("bpm-scroll-btn")?.addEventListener("click", () => {
+    state.scroll.bpmMode    = !state.scroll.bpmMode;
+    state.scroll.syncMode   = false; // mutual exclusion
+    state.scroll.userPaused = false;
     state.scroll._lastTime  = null;
     updateScrollUI();
   });
@@ -418,6 +441,27 @@ async function fetchSpotifyPlayback() {
     state.lastSyncAt = Date.now();
     setAuthStatus("live", "Spotify conectado");
     setPlaybackStatus(nextTrack.isPlaying ? "live" : "warn", nextTrack.isPlaying ? "Reproduciendo" : "En pausa");
+
+    // Auto-pause/resume scroll when Spotify pauses or resumes
+    // IMPORTANT: snapshot _wasAutoPlaying BEFORE mutating userPaused
+    if (nextTrack.isPlaying && !state.scroll.userPaused) {
+      state.scroll._wasAutoPlaying = true;
+    }
+
+    if (state.prevIsPlaying !== null) {
+      if (state.prevIsPlaying && !nextTrack.isPlaying) {
+        // Song just paused → pause scroll
+        state.scroll.userPaused = true;
+        updateScrollUI();
+      } else if (!state.prevIsPlaying && nextTrack.isPlaying && state.scroll._wasAutoPlaying) {
+        // Song just resumed → resume scroll (only if it was active before)
+        state.scroll.userPaused = false;
+        state.scroll._lastTime  = null;
+        updateScrollUI();
+      }
+    }
+    state.prevIsPlaying = nextTrack.isPlaying;
+
     renderAll();
 
     if (trackChanged) {
@@ -445,8 +489,11 @@ async function loadTrackResources(track, trackKey) {
   // syncMode persists across songs — recalibrate _acc and _lastTime
   state.scroll._acc       = 0;
   state.scroll._lastTime  = null;
-  state.enharmonic = false;
+  state.enharmonic   = false;
+  state.bpm          = null;
+  state.detectedKey  = null;
   if (el.enharmonicBtn) el.enharmonicBtn.classList.remove("active");
+  updateKeyBadge();
   showScrollControls(false);
   updateScrollUI();
 
@@ -1085,6 +1132,18 @@ async function fetchChordsForTrack(track, trackKey) {
     state.chordsSourceIdx = 0;
     showScrollControls(true);
 
+    // Detect key from chords
+    state.detectedKey = detectKeyFromSheet(found[0].content || "");
+    updateKeyBadge();
+
+    // Fetch BPM from Spotify Audio Features
+    if (state.currentTrack?.id && state.tokens) {
+      fetchAudioFeatures(state.currentTrack.id).catch(() => {});
+    }
+
+    // Record stats
+    if (state.currentTrack) recordStats(state.currentTrack, state.detectedKey);
+
     // If sync mode is on, auto-resume scroll after DOM renders the chords
     if (state.scroll.syncMode) {
       setTimeout(() => {
@@ -1092,7 +1151,7 @@ async function fetchChordsForTrack(track, trackKey) {
         state.scroll._acc       = 0;
         state.scroll._lastTime  = null;
         updateScrollUI();
-      }, 800); // wait for render + smooth scroll to settle
+      }, 800);
     }
   } else {
     state.chordsTone = "warn";
@@ -1129,6 +1188,7 @@ function startProgressLoop() {
   state.progressTimer = window.setInterval(() => {
     updateProgressDisplay();
     renderSyncLabel();
+    highlightActiveSection();
   }, 500);
   startTeleprompterLoop();
 }
@@ -1153,7 +1213,11 @@ function startTeleprompterLoop() {
 
     let pxPerSec;
 
-    if (state.scroll.syncMode) {
+    if (state.scroll.bpmMode && state.bpm) {
+      // BPM-calibrated scroll: proportional to tempo
+      const PX_PER_BEAT = 6;
+      pxPerSec = (state.bpm / 60) * PX_PER_BEAT * state.scroll.speed;
+    } else if (state.scroll.syncMode) {
       // ── Song-sync: calculate required px/sec from Spotify position ──
       const track = state.currentTrack;
       if (!track || !track.durationMs) {
@@ -1208,6 +1272,20 @@ function updateScrollUI() {
     syncBtn.title = sync ? "Sync con canción: ON" : "Sincronizar con duración de canción";
   }
 
+  // BPM button state
+  const bpmBtn = document.getElementById("bpm-scroll-btn");
+  if (bpmBtn) {
+    bpmBtn.classList.toggle("active", state.scroll.bpmMode);
+    const bpmLabel = state.bpm ? `♩${Math.round(state.bpm)}` : "♩BPM";
+    bpmBtn.textContent = bpmLabel;
+    bpmBtn.style.display = state.bpm ? "inline-flex" : "none";
+    // Hide the divider immediately before BPM button when BPM unavailable
+    const bpmDiv = bpmBtn.previousElementSibling;
+    if (bpmDiv && bpmDiv.classList.contains("ctrl-div")) {
+      bpmDiv.style.display = state.bpm ? "" : "none";
+    }
+  }
+
   if (el.scrollSpeedLabel) {
     el.scrollSpeedLabel.textContent = state.scroll.speed.toFixed(2).replace(/\.?0+$/, "") + "×";
   }
@@ -1257,6 +1335,7 @@ function renderNowPlaying() {
     el.progressFill.style.width   = "0%";
     setPageBackground(null);
     document.documentElement.style.removeProperty("--chord-color");
+    document.documentElement.style.removeProperty("--chord-stroke");
     renderSyncLabel();
     return;
   }
@@ -1471,6 +1550,7 @@ function renderChords() {
       if (state.enharmonic === "flat2sharp") displayed = flatToSharpText(displayed);
       else if (state.enharmonic === "sharp2flat") displayed = sharpToFlatText(displayed);
       el.chordsSections.innerHTML = `<div class="chord-sheet">${buildChordSheetHTML(displayed)}</div>`;
+      attachChordTapHandlers();
     }
     return;
   }
@@ -1599,11 +1679,11 @@ function setAuthStatus(tone, text)     { state.authTone = tone;     state.authTe
 function setPlaybackStatus(tone, text) { state.playbackTone = tone; state.playbackText = text; }
 
 async function extractAndSetBackground(imageUrl) {
-  setPageBackground(imageUrl); // blurred bg immediately
+  setPageBackground(imageUrl);
 
   try {
     const proxied = proxyUrl(imageUrl);
-    const res = await fetch(proxied);
+    const res  = await fetch(proxied);
     const blob = await res.blob();
     const dataUrl = await new Promise(resolve => {
       const reader = new FileReader();
@@ -1613,102 +1693,115 @@ async function extractAndSetBackground(imageUrl) {
 
     const img = new Image();
     img.onload = () => {
-      const SIZE = 80;
+      const SIZE = 100;
       const canvas = document.createElement("canvas");
       canvas.width = canvas.height = SIZE;
       const ctx = canvas.getContext("2d");
       ctx.drawImage(img, 0, 0, SIZE, SIZE);
       const data = ctx.getImageData(0, 0, SIZE, SIZE).data;
+      const total = SIZE * SIZE;
 
-      // ── Hue-bucket quantization ──────────────────────────────
-      // Divide the hue wheel into N buckets, accumulate weighted
-      // saturation×brightness per bucket, pick the winner.
-      const BUCKETS = 36; // 10° per bucket
-      const bucketWeight = new Float32Array(BUCKETS);
-      const bucketR      = new Float32Array(BUCKETS);
-      const bucketG      = new Float32Array(BUCKETS);
-      const bucketB      = new Float32Array(BUCKETS);
+      // Helper: RGB → HSL (all 0-1)
+      function rgbToHsl(r, g, b) {
+        const max = Math.max(r,g,b), min = Math.min(r,g,b);
+        const l = (max + min) / 2;
+        if (max === min) return [0, 0, l];
+        const d = max - min;
+        const s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        let h = 0;
+        if (max === r)      h = ((g - b) / d + (g < b ? 6 : 0)) / 6;
+        else if (max === g) h = ((b - r) / d + 2) / 6;
+        else                h = ((r - g) / d + 4) / 6;
+        return [h * 360, s, l];
+      }
+
+      // Helper: HSL → hex (s and l are 0-1, h is 0-360)
+      function hslToHex(h, s, l) {
+        const c = (1 - Math.abs(2*l - 1)) * s;
+        const x = c * (1 - Math.abs((h/60) % 2 - 1));
+        const m = l - c/2;
+        let r=0,g=0,b=0;
+        const h6 = Math.floor(h/60);
+        if      (h6===0){r=c;g=x;}
+        else if (h6===1){r=x;g=c;}
+        else if (h6===2){g=c;b=x;}
+        else if (h6===3){g=x;b=c;}
+        else if (h6===4){r=x;b=c;}
+        else            {r=c;b=x;}
+        const toH = v => Math.round((v+m)*255).toString(16).padStart(2,"0");
+        return "#" + toH(r) + toH(g) + toH(b);
+      }
+
+      // ── Pass 1: measure average luminosity (detect light/dark cover) ──
+      let lumSum = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        lumSum += (data[i]*0.299 + data[i+1]*0.587 + data[i+2]*0.114) / 255;
+      }
+      const avgLum = lumSum / total;
+      const isLightCover = avgLum > 0.62;
+      console.log("[BG] avg luminosity:", avgLum.toFixed(2), isLightCover ? "(light cover)" : "(dark cover)");
+
+      // ── Pass 2: hue bucket voting ────────────────────────────────────
+      // 36 buckets = 10° each. Score = pixel count, but only colorful pixels vote.
+      const BUCKETS = 36;
+      const bucketCount = new Float64Array(BUCKETS); // raw pixel count per bucket
+      const bucketSatSum = new Float64Array(BUCKETS); // total saturation per bucket
 
       for (let i = 0; i < data.length; i += 4) {
-        const r = data[i] / 255;
-        const g = data[i+1] / 255;
-        const b = data[i+2] / 255;
+        const r = data[i]/255, g = data[i+1]/255, b = data[i+2]/255;
+        const [h, s, l] = rgbToHsl(r, g, b);
 
-        const max = Math.max(r, g, b);
-        const min = Math.min(r, g, b);
-        const delta = max - min;
+        // Ignore: near-black, near-white, near-gray
+        if (l < 0.12 || l > 0.88 || s < 0.20) continue;
 
-        const brightness = max;
-        const saturation = max === 0 ? 0 : delta / max;
+        const bucket = Math.floor(h / 10) % BUCKETS;
+        bucketCount[bucket]  += 1;
+        bucketSatSum[bucket] += s;
+      }
 
-        // Skip near-black, near-white, and desaturated pixels
-        if (saturation < 0.30 || brightness < 0.15 || brightness > 0.97) continue;
+      // Score = count^1.5 × avgSaturation — area dominates, saturation breaks ties
+      let bestBucket = -1, bestScore = 0;
+      let secondBucket = -1, secondScore = 0;
 
-        // Compute hue 0–360
-        let hue = 0;
-        if (delta > 0) {
-          if (max === r)      hue = 60 * (((g - b) / delta) % 6);
-          else if (max === g) hue = 60 * ((b - r) / delta + 2);
-          else                hue = 60 * ((r - g) / delta + 4);
-          if (hue < 0) hue += 360;
+      for (let i = 0; i < BUCKETS; i++) {
+        if (bucketCount[i] === 0) continue;
+        const avgSat = bucketSatSum[i] / bucketCount[i];
+        const score  = Math.pow(bucketCount[i], 1.5) * avgSat;
+        if (score > bestScore) {
+          secondBucket = bestBucket; secondScore = bestScore;
+          bestBucket = i; bestScore = score;
+        } else if (score > secondScore) {
+          secondBucket = i; secondScore = score;
         }
-
-        const bucket = Math.floor(hue / (360 / BUCKETS)) % BUCKETS;
-        const score  = saturation * saturation * brightness; // square sat to penalize dull colors
-
-        bucketWeight[bucket] += score;
-        bucketR[bucket] += r * score;
-        bucketG[bucket] += g * score;
-        bucketB[bucket] += b * score;
       }
 
-      // Find dominant bucket
-      let bestBucket = 0;
-      for (let i = 1; i < BUCKETS; i++) {
-        if (bucketWeight[i] > bucketWeight[bestBucket]) bestBucket = i;
-      }
-
-      if (bucketWeight[bestBucket] === 0) {
-        console.log("[BG] no vibrant pixels found");
+      if (bestBucket === -1) {
+        console.log("[BG] no colorful pixels — keeping default");
         return;
       }
 
-      const w  = bucketWeight[bestBucket];
-      let   fr = bucketR[bestBucket] / w;
-      let   fg = bucketG[bestBucket] / w;
-      let   fb = bucketB[bestBucket] / w;
+      const primaryHue   = bestBucket * 10 + 5;   // center of winning bucket
+      const secondaryHue = secondBucket >= 0 ? secondBucket * 10 + 5 : (primaryHue + 180) % 360;
 
-      // Convert to HSL to force high saturation and readable lightness
-      const maxC  = Math.max(fr, fg, fb);
-      const minC  = Math.min(fr, fg, fb);
-      const delta2 = maxC - minC;
-      let hOut = 0;
-      if (delta2 > 0) {
-        if (maxC === fr)      hOut = 60 * (((fg - fb) / delta2) % 6);
-        else if (maxC === fg) hOut = 60 * ((fb - fr) / delta2 + 2);
-        else                  hOut = 60 * ((fr - fg) / delta2 + 4);
-        if (hOut < 0) hOut += 360;
+      console.log("[BG] primary hue:", Math.round(primaryHue) + "°",
+                  "secondary:", Math.round(secondaryHue) + "°",
+                  "light cover:", isLightCover);
+
+      if (isLightCover) {
+        // Light/white cover: white chords with colored stroke
+        // Stroke color = secondary hue, vivid and darkened so it reads on white chord text
+        const strokeHex = hslToHex(primaryHue, 0.85, 0.40);
+        document.documentElement.style.setProperty("--chord-color", "#ffffff");
+        document.documentElement.style.setProperty("--chord-stroke", strokeHex);
+        console.log("[BG] light cover → white chords, stroke:", strokeHex);
+      } else {
+        // Dark/normal cover: vivid chord color from primary hue
+        // Saturation 88%, lightness 68% — always readable on dark bg
+        const chordHex = hslToHex(primaryHue, 0.88, 0.68);
+        document.documentElement.style.setProperty("--chord-color", chordHex);
+        document.documentElement.style.removeProperty("--chord-stroke");
+        console.log("[BG] chord color →", chordHex);
       }
-
-      // Force: saturation 90%, lightness 68% — always vivid and readable on dark bg
-      const s = 0.90, l = 0.68;
-      const c  = (1 - Math.abs(2 * l - 1)) * s;
-      const x  = c * (1 - Math.abs((hOut / 60) % 2 - 1));
-      const m  = l - c / 2;
-      let rr = 0, gg = 0, bb = 0;
-      const h6 = Math.floor(hOut / 60);
-      if      (h6 === 0) { rr = c; gg = x; }
-      else if (h6 === 1) { rr = x; gg = c; }
-      else if (h6 === 2) { gg = c; bb = x; }
-      else if (h6 === 3) { gg = x; bb = c; }
-      else if (h6 === 4) { rr = x; bb = c; }
-      else               { rr = c; bb = x; }
-
-      const toHex = v => Math.round((v + m) * 255).toString(16).padStart(2, "0");
-      const hex = "#" + toHex(rr) + toHex(gg) + toHex(bb);
-
-      document.documentElement.style.setProperty("--chord-color", hex);
-      console.log("[BG] chord color →", hex, " hue:", Math.round(hOut) + "°");
     };
     img.src = dataUrl;
   } catch(e) {
@@ -1811,3 +1904,580 @@ function escapeHtml(value) {
     .replace(/&/g, "&amp;").replace(/</g, "&lt;")
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
+
+// ═══════════════════════════════════════════════════════════════
+//  NEW FEATURES
+// ═══════════════════════════════════════════════════════════════
+
+// ── 1. Spotify Audio Features (BPM) ──────────────────────────
+async function fetchAudioFeatures(trackId) {
+  if (!state.tokens?.accessToken || !trackId) return;
+  try {
+    const res = await fetch(`https://api.spotify.com/v1/audio-features/${trackId}`, {
+      headers: { Authorization: `Bearer ${state.tokens.accessToken}` }
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+    if (data.tempo) {
+      state.bpm = Math.round(data.tempo);
+      console.log("[BPM]", state.bpm, "bpm");
+      updateScrollUI();
+      updateKeyBadge(); // badge also shows BPM
+    }
+  } catch(e) { console.log("[BPM] error:", e.message); }
+}
+
+// ── 2. Key detection ──────────────────────────────────────────
+// Krumhansl-Schmuckler simplified: count chord root occurrences,
+// match against major/minor key profiles.
+const KEY_NAMES_ES = {
+  "C":"Do", "C#":"Do#", "Db":"Reb", "D":"Re", "D#":"Re#", "Eb":"Mib",
+  "E":"Mi", "F":"Fa", "F#":"Fa#", "Gb":"Solb", "G":"Sol", "G#":"Sol#",
+  "Ab":"Lab", "A":"La", "A#":"La#", "Bb":"Sib", "B":"Si"
+};
+const CHROMA_IDX = { C:0, "C#":1, Db:1, D:2, "D#":3, Eb:3, E:4, F:5,
+                     "F#":6, Gb:6, G:7, "G#":8, Ab:8, A:9, "A#":10, Bb:10, B:11 };
+
+// Profiles: degrees present in major and natural minor keys
+const MAJOR_SCALE = [0,2,4,5,7,9,11];
+const MINOR_SCALE = [0,2,3,5,7,8,10];
+
+function detectKeyFromSheet(text) {
+  if (!text) return null;
+  const chordRe = /\b([A-G][#b]?)(?:m(?:aj)?|min|dim|aug|sus|add|\d)*/g;
+  const roots = {};
+  let m;
+  while ((m = chordRe.exec(text)) !== null) {
+    const r = m[1];
+    roots[r] = (roots[r] || 0) + 1;
+  }
+
+  let bestKey = null, bestScore = -1, bestMinor = false;
+
+  // Sharp-only root names for all 12 pitches
+  const ROOT_NAMES = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  for (let root = 0; root < 12; root++) {
+    const rootName = ROOT_NAMES[root];
+
+    for (const [scale, minor] of [[MAJOR_SCALE, false], [MINOR_SCALE, true]]) {
+      const scalePcs = new Set(scale.map(d => (root + d) % 12));
+      let score = 0;
+      for (const [r, cnt] of Object.entries(roots)) {
+        const pc = CHROMA_IDX[r];
+        if (pc !== undefined && scalePcs.has(pc)) score += cnt;
+      }
+      if (score > bestScore) {
+        bestScore = score; bestKey = rootName; bestMinor = minor;
+      }
+    }
+  }
+
+  if (!bestKey) return null;
+  const esName = KEY_NAMES_ES[bestKey] || bestKey;
+  return { root: bestKey, minor: bestMinor, label: `${esName} ${bestMinor ? "menor" : "mayor"}` };
+}
+
+function updateKeyBadge() {
+  const badge = document.getElementById("key-badge-inline");
+  const shareBtn = document.getElementById("share-btn");
+  if (!badge) return;
+
+  const parts = [];
+  if (state.detectedKey) parts.push(state.detectedKey.label);
+  if (state.bpm) parts.push(`${state.bpm} BPM`);
+
+  if (parts.length) {
+    badge.textContent = parts.join(" · ");
+    badge.style.display = "inline-block";
+  } else {
+    badge.style.display = "none";
+  }
+
+  if (shareBtn) shareBtn.style.display = state.chordsData ? "flex" : "none";
+}
+
+// ── 3. Font size ──────────────────────────────────────────────
+function loadUserPrefs() {
+  try {
+    const fs = localStorage.getItem(STORAGE_KEYS.fontSize);
+    if (fs) {
+      state.chordFontSize = parseInt(fs, 10) || 13;
+    }
+    const instr = localStorage.getItem(STORAGE_KEYS.instrument);
+    if (instr === "piano" || instr === "guitar") state.instrument = instr;
+  } catch(_) {}
+  applyFontSize();
+  applyInstrumentUI();
+}
+
+function applyFontSize() {
+  document.documentElement.style.setProperty("--chord-font-size", state.chordFontSize + "px");
+  const label = document.getElementById("font-size-label");
+  if (label) label.textContent = state.chordFontSize + "px";
+}
+
+function changeFontSize(delta) {
+  state.chordFontSize = Math.max(10, Math.min(24, state.chordFontSize + delta));
+  applyFontSize();
+  try { localStorage.setItem(STORAGE_KEYS.fontSize, state.chordFontSize); } catch(_) {}
+}
+
+function setInstrument(instr) {
+  state.instrument = instr;
+  applyInstrumentUI();
+  try { localStorage.setItem(STORAGE_KEYS.instrument, instr); } catch(_) {}
+}
+
+function applyInstrumentUI() {
+  const g = document.getElementById("instr-guitar");
+  const p = document.getElementById("instr-piano");
+  if (g) g.classList.toggle("active", state.instrument === "guitar");
+  if (p) p.classList.toggle("active", state.instrument === "piano");
+}
+
+// ── 4. Active section highlight ───────────────────────────────
+function highlightActiveSection() {
+  if (!state.currentTrack || !state.currentTrack.durationMs) return;
+  const progressMs = computeProgressMs();
+  const ratio = progressMs / state.currentTrack.durationMs;
+
+  const sections = document.querySelectorAll(".cs-section");
+  if (!sections.length) return;
+
+  const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+  const targetY = scrollable * ratio;
+
+  let active = null;
+  for (const sec of sections) {
+    const secY = sec.getBoundingClientRect().top + window.scrollY;
+    if (secY <= targetY + window.innerHeight * 0.55) active = sec;
+  }
+
+  sections.forEach(s => s.classList.remove("cs-active"));
+  if (active) active.classList.add("cs-active");
+}
+
+// ── 5. Chord tap → diagram modal ─────────────────────────────
+function attachChordTapHandlers() {
+  // Use event delegation on #chords-sections (persistent element) instead
+  // of adding a new listener on .chord-sheet (recreated each render).
+  const container = document.getElementById("chords-sections");
+  if (!container || container._chordTapBound) return;
+  container._chordTapBound = true;
+  container.addEventListener("click", (e) => {
+    const chord = e.target.closest(".cs-chord");
+    if (!chord) return;
+    const name = chord.textContent.trim();
+    if (name) openDiagram(name);
+  });
+}
+
+function openDiagram(chordName) {
+  // Apply current transposition to find the actual chord shown
+  const modal   = document.getElementById("diagram-modal");
+  const overlay = document.getElementById("diagram-overlay");
+  const nameEl  = document.getElementById("diagram-chord-name");
+  if (!modal) return;
+
+  nameEl.textContent = chordName;
+  renderDiagram(chordName, 0); // start at voicing 0
+
+  modal.classList.add("open");
+  overlay.classList.add("open");
+}
+
+function closeDiagram() {
+  document.getElementById("diagram-modal")?.classList.remove("open");
+  document.getElementById("diagram-overlay")?.classList.remove("open");
+}
+
+function renderDiagram(chordName, voicingIdx) {
+  const content = document.getElementById("diagram-content");
+  const tabs    = document.getElementById("diagram-tabs");
+  const hint    = document.getElementById("diagram-key-hint");
+  if (!content) return;
+
+  if (state.instrument === "piano") {
+    const notes = getChordNotes(chordName);
+    content.innerHTML = renderPianoDiagram(notes);
+    if (tabs) tabs.innerHTML = "";
+    if (hint) hint.textContent = notes.length ? notes.join(" – ") : "";
+    return;
+  }
+
+  // Guitar
+  const voicings = getGuitarVoicings(chordName);
+  if (!voicings.length) {
+    content.innerHTML = `<p style="color:var(--text-3);font-size:13px;padding:20px">Sin diagrama para "${chordName}"</p>`;
+    if (tabs) tabs.innerHTML = "";
+    if (hint) hint.textContent = "";
+    return;
+  }
+
+  const idx = Math.max(0, Math.min(voicingIdx, voicings.length - 1));
+  content.innerHTML = renderGuitarDiagram(voicings[idx]);
+
+  // Voicing tabs if multiple
+  if (tabs) {
+    tabs.innerHTML = voicings.length > 1
+      ? voicings.map((_, i) => `<button class="diagram-tab${i===idx?" active":""}" onclick="renderDiagram('${chordName}',${i})">${i+1}</button>`).join("")
+      : "";
+  }
+
+  if (hint) hint.textContent = voicings[idx].notes ? voicings[idx].notes.join(" – ") : "";
+}
+
+// Guitar diagram SVG renderer
+// voicing = { frets:[e,B,G,D,A,E], baseFret, fingers }
+// frets: -1=muted, 0=open, 1-5=finger position
+function renderGuitarDiagram(v) {
+  const SX = 34, SY = 36, COLS = 6, ROWS = 5;
+  const W = SX * (COLS - 1), H = SY * ROWS;
+  const ox = 20, oy = 40;
+  const frets = v.frets;   // [e, B, G, D, A, E(low)]
+  const base  = v.baseFret || 1;
+  const fingers = v.fingers || [];
+
+  let svg = `<svg width="${W + ox*2}" height="${H + oy + 24}" viewBox="0 0 ${W + ox*2} ${H + oy + 24}">`;
+
+  // Nut (thick bar if base === 1)
+  const nutY = oy;
+  if (base === 1) {
+    svg += `<rect x="${ox}" y="${nutY - 4}" width="${W}" height="6" rx="2" fill="rgba(255,255,255,.8)"/>`;
+  } else {
+    // Base fret label
+    svg += `<text x="${ox - 6}" y="${nutY + SY/2}" font-size="10" fill="rgba(255,255,255,.4)" text-anchor="end" font-family="sans-serif">${base}</text>`;
+    svg += `<line x1="${ox}" y1="${nutY}" x2="${ox+W}" y2="${nutY}" stroke="rgba(255,255,255,.25)" stroke-width="1.5"/>`;
+  }
+
+  // Fret lines
+  for (let r = 1; r <= ROWS; r++) {
+    const y = oy + r * SY;
+    svg += `<line x1="${ox}" y1="${y}" x2="${ox+W}" y2="${y}" stroke="rgba(255,255,255,.15)" stroke-width="1"/>`;
+  }
+
+  // String lines
+  for (let c = 0; c < COLS; c++) {
+    const x = ox + c * SX;
+    svg += `<line x1="${x}" y1="${oy}" x2="${x}" y2="${oy + ROWS*SY}" stroke="rgba(255,255,255,.3)" stroke-width="1"/>`;
+  }
+
+  // Dots and mute markers
+  for (let c = 0; c < COLS; c++) {
+    const strIdx = (COLS - 1) - c; // e=col5, E=col0
+    const fret = frets[strIdx];
+    const x = ox + c * SX;
+
+    if (fret === -1) {
+      // Muted string X
+      svg += `<text x="${x}" y="${oy - 8}" font-size="12" fill="rgba(255,100,100,.7)" text-anchor="middle" font-family="sans-serif">✕</text>`;
+    } else if (fret === 0) {
+      // Open string circle
+      svg += `<circle cx="${x}" cy="${oy - 8}" r="5" fill="none" stroke="rgba(255,255,255,.5)" stroke-width="1.5"/>`;
+    } else {
+      // Fret dot
+      const relFret = fret - base + 1;
+      const dotY = oy + (relFret - 0.5) * SY;
+      svg += `<circle cx="${x}" cy="${dotY}" r="12" fill="var(--chord-color)" opacity="0.9"/>`;
+      // Finger number
+      const finger = fingers[strIdx];
+      if (finger) {
+        svg += `<text x="${x}" y="${dotY + 4}" font-size="11" font-weight="700" fill="rgba(0,0,0,.8)" text-anchor="middle" font-family="sans-serif">${finger}</text>`;
+      }
+    }
+  }
+
+  // String name labels at bottom
+  const strNames = ["E","A","D","G","B","e"];
+  for (let c = 0; c < COLS; c++) {
+    const lbl = strNames[c];
+    const x   = ox + c * SX;
+    svg += `<text x="${x}" y="${oy + ROWS*SY + 16}" font-size="9" fill="rgba(255,255,255,.3)" text-anchor="middle" font-family="sans-serif">${lbl}</text>`;
+  }
+
+  svg += "</svg>";
+  return svg;
+}
+
+function renderPianoDiagram(notes) {
+  const noteOrder = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const noteSet = new Set(notes);
+  const OCTAVES = 1;
+  const WW = 28, WH = 90, BW = 18, BH = 58;
+  const whiteNotes = ["C","D","E","F","G","A","B"];
+  const blackNotes = { "C#":1, "D#":2, "F#":4, "G#":5, "A#":6 };
+  const totalWhite = 7 * OCTAVES + 1;
+  const svgW = totalWhite * WW + 4;
+
+  let whites = "", blacks = "", labels = "";
+  let wx = 2;
+  for (let oct = 0; oct < OCTAVES + 1; oct++) {
+    for (const n of whiteNotes) {
+      if (oct === OCTAVES && n !== "C") break;
+      const note = n; // octave ignored for coloring
+      const isLit = noteSet.has(note);
+      whites += `<rect x="${wx}" y="2" width="${WW-2}" height="${WH}" rx="4"
+        fill="${isLit ? "var(--chord-color)" : "rgba(255,255,255,.92)"}"
+        stroke="rgba(0,0,0,.3)" stroke-width="1"/>`;
+      if (isLit) labels += `<text x="${wx + WW/2 - 1}" y="${2 + WH - 8}" font-size="9" font-weight="700"
+        fill="rgba(0,0,0,.7)" text-anchor="middle" font-family="sans-serif">${n}</text>`;
+      wx += WW;
+    }
+  }
+
+  // Black keys
+  wx = 2;
+  const blackOffset = { "C#": 1, "D#": 2, "F#": 4, "G#": 5, "A#": 6 };
+  for (let oct = 0; oct < OCTAVES; oct++) {
+    let baseX = 2 + oct * 7 * WW;
+    for (const [n, pos] of Object.entries(blackOffset)) {
+      const isLit = noteSet.has(n);
+      const bx = baseX + (pos * WW) - BW/2;
+      blacks += `<rect x="${bx}" y="2" width="${BW}" height="${BH}" rx="3"
+        fill="${isLit ? "var(--chord-color)" : "rgba(20,20,22,.95)"}"
+        stroke="rgba(255,255,255,.1)" stroke-width="1"/>`;
+      if (isLit) labels += `<text x="${bx + BW/2}" y="${2 + BH - 7}" font-size="8" font-weight="700"
+        fill="${isLit ? "rgba(0,0,0,.7)" : "rgba(255,255,255,.4)"}" text-anchor="middle" font-family="sans-serif">${n}</text>`;
+    }
+  }
+
+  return `<svg width="${svgW}" height="${WH + 6}" viewBox="0 0 ${svgW} ${WH + 6}">${whites}${blacks}${labels}</svg>`;
+}
+
+// ── Chord Database ────────────────────────────────────────────
+// Format: { frets:[E,A,D,G,B,e], baseFret, fingers:[E,A,D,G,B,e], notes[] }
+const GUITAR_CHORDS = {
+  "C":   [{ frets:[-1,3,2,0,1,0], baseFret:1, fingers:[0,3,2,0,1,0], notes:["C","E","G"] }],
+  "Cm":  [{ frets:[-1,3,5,5,4,3], baseFret:1, fingers:[0,1,3,4,2,1], notes:["C","Eb","G"] }],
+  "C#":  [{ frets:[-1,4,6,6,6,4], baseFret:1, fingers:[0,1,3,4,4,1], notes:["C#","F","Ab"] }],
+  "Db":  [{ frets:[-1,4,6,6,6,4], baseFret:1, fingers:[0,1,3,4,4,1], notes:["Db","F","Ab"] }],
+  "D":   [{ frets:[-1,-1,0,2,3,2], baseFret:1, fingers:[0,0,0,1,3,2], notes:["D","F#","A"] }],
+  "Dm":  [{ frets:[-1,-1,0,2,3,1], baseFret:1, fingers:[0,0,0,2,3,1], notes:["D","F","A"] }],
+  "D#":  [{ frets:[-1,-1,1,3,4,3], baseFret:1, fingers:[0,0,1,3,4,2], notes:["D#","G","A#"] }],
+  "Eb":  [{ frets:[-1,-1,1,3,4,3], baseFret:1, fingers:[0,0,1,3,4,2], notes:["Eb","G","Bb"] }],
+  "E":   [{ frets:[0,2,2,1,0,0],  baseFret:1, fingers:[0,2,3,1,0,0], notes:["E","B","E","G#","B","E"] }],
+  "Em":  [{ frets:[0,2,2,0,0,0],  baseFret:1, fingers:[0,2,3,0,0,0], notes:["E","B","E","G","B","E"] }],
+  "F":   [{ frets:[1,3,3,2,1,1],  baseFret:1, fingers:[1,4,3,2,1,1], notes:["F","C","F","A","C","F"] }],
+  "Fm":  [{ frets:[1,3,3,1,1,1],  baseFret:1, fingers:[1,3,4,1,1,1], notes:["F","C","F","Ab","C","F"] }],
+  "F#":  [{ frets:[2,4,4,3,2,2],  baseFret:1, fingers:[1,4,3,2,1,1], notes:["F#","C#","F#","A#","C#","F#"] }],
+  "Gb":  [{ frets:[2,4,4,3,2,2],  baseFret:1, fingers:[1,4,3,2,1,1], notes:["Gb","Db","Gb","Bb","Db","Gb"] }],
+  "G":   [{ frets:[3,2,0,0,0,3],  baseFret:1, fingers:[2,1,0,0,0,3], notes:["G","B","D"] },
+           { frets:[3,2,0,0,3,3], baseFret:1, fingers:[2,1,0,0,3,4], notes:["G","B","D"] }],
+  "Gm":  [{ frets:[3,5,5,3,3,3],  baseFret:1, fingers:[1,3,4,1,1,1], notes:["G","D","G","Bb","D","G"] }],
+  "G#":  [{ frets:[4,6,6,5,4,4],  baseFret:1, fingers:[1,3,4,2,1,1], notes:["G#","Eb","Ab"] }],
+  "Ab":  [{ frets:[4,6,6,5,4,4],  baseFret:1, fingers:[1,3,4,2,1,1], notes:["Ab","Eb","Ab"] }],
+  "A":   [{ frets:[-1,0,2,2,2,0], baseFret:1, fingers:[0,0,2,3,4,0], notes:["A","E","A","C#","E"] }],
+  "Am":  [{ frets:[-1,0,2,2,1,0], baseFret:1, fingers:[0,0,2,3,1,0], notes:["A","E","A","C","E"] }],
+  "A#":  [{ frets:[-1,1,3,3,3,1], baseFret:1, fingers:[0,1,3,4,4,1], notes:["A#","F","A#","D","F"] }],
+  "Bb":  [{ frets:[-1,1,3,3,3,1], baseFret:1, fingers:[0,1,3,4,4,1], notes:["Bb","F","Bb","D","F"] }],
+  "B":   [{ frets:[-1,2,4,4,4,2], baseFret:1, fingers:[0,1,3,4,4,1], notes:["B","F#","B","D#","F#"] }],
+  "Bm":  [{ frets:[-1,2,4,4,3,2], baseFret:1, fingers:[0,1,3,4,2,1], notes:["B","F#","B","D","F#"] }],
+  // 7ths
+  "G7":  [{ frets:[3,2,0,0,0,1],  baseFret:1, fingers:[3,2,0,0,0,1], notes:["G","B","D","F"] }],
+  "C7":  [{ frets:[-1,3,2,3,1,0], baseFret:1, fingers:[0,3,2,4,1,0], notes:["C","E","G","Bb"] }],
+  "D7":  [{ frets:[-1,-1,0,2,1,2], baseFret:1, fingers:[0,0,0,3,1,2], notes:["D","F#","A","C"] }],
+  "E7":  [{ frets:[0,2,0,1,0,0],  baseFret:1, fingers:[0,2,0,1,0,0], notes:["E","B","E","G#","D","E"] }],
+  "A7":  [{ frets:[-1,0,2,0,2,0], baseFret:1, fingers:[0,0,2,0,3,0], notes:["A","E","A","C#","G"] }],
+  "B7":  [{ frets:[-1,2,1,2,0,2], baseFret:1, fingers:[0,2,1,3,0,4], notes:["B","F#","B","D#","A"] }],
+  "F7":  [{ frets:[1,3,1,2,1,1],  baseFret:1, fingers:[1,4,1,2,1,1], notes:["F","C","Eb","A"] }],
+  "Am7": [{ frets:[-1,0,2,0,1,0], baseFret:1, fingers:[0,0,2,0,1,0], notes:["A","E","G","C","E"] }],
+  "Em7": [{ frets:[0,2,2,0,3,0],  baseFret:1, fingers:[0,2,3,0,4,0], notes:["E","B","E","G","D"] }],
+  "Dm7": [{ frets:[-1,-1,0,2,1,1], baseFret:1, fingers:[0,0,0,2,1,1], notes:["D","A","C","F"] }],
+  "Cmaj7":[{ frets:[-1,3,2,0,0,0], baseFret:1, fingers:[0,3,2,0,0,0], notes:["C","E","G","B"] }],
+  "Fmaj7":[{ frets:[-1,-1,3,2,1,0], baseFret:1, fingers:[0,0,3,2,1,0], notes:["F","A","C","E"] }],
+  "Gmaj7":[{ frets:[3,2,0,0,0,2],  baseFret:1, fingers:[3,2,0,0,0,1], notes:["G","B","D","F#"] }],
+  "Amaj7":[{ frets:[-1,0,2,1,2,0], baseFret:1, fingers:[0,0,2,1,3,0], notes:["A","E","A","C#","G#"] }],
+  "Bm7": [{ frets:[-1,2,4,2,3,2], baseFret:1, fingers:[0,1,3,1,2,1], notes:["B","F#","A","D","F#"] }],
+  "Dsus2":[{ frets:[-1,-1,0,2,3,0], baseFret:1, fingers:[0,0,0,1,3,0], notes:["D","A","E"] }],
+  "Dsus4":[{ frets:[-1,-1,0,2,3,3], baseFret:1, fingers:[0,0,0,1,3,4], notes:["D","A","G"] }],
+  "Asus2":[{ frets:[-1,0,2,2,0,0], baseFret:1, fingers:[0,0,2,3,0,0], notes:["A","E","B"] }],
+  "Asus4":[{ frets:[-1,0,2,2,0,0], baseFret:1, fingers:[0,0,2,3,0,0], notes:["A","E","D"] }],
+};
+
+function getGuitarVoicings(chordName) {
+  // Try exact match first, then normalize
+  if (GUITAR_CHORDS[chordName]) return GUITAR_CHORDS[chordName];
+  // Try without bass note (e.g. "G/B" → "G")
+  const noSlash = chordName.replace(/\/.*$/, "");
+  if (GUITAR_CHORDS[noSlash]) return GUITAR_CHORDS[noSlash];
+  // Normalize enharmonics
+  const enharmonics = { "Db":"C#","Eb":"D#","Gb":"F#","Ab":"G#","Bb":"A#" };
+  const rev = Object.fromEntries(Object.entries(enharmonics).map(([a,b])=>[b,a]));
+  const root = noSlash.match(/^[A-G][#b]?/)?.[0] || "";
+  const suffix = noSlash.slice(root.length);
+  const altRoot = enharmonics[root] || rev[root] || "";
+  if (altRoot && GUITAR_CHORDS[altRoot + suffix]) return GUITAR_CHORDS[altRoot + suffix];
+  return [];
+}
+
+function getChordNotes(chordName) {
+  const voicings = getGuitarVoicings(chordName);
+  if (voicings.length) return voicings[0].notes || [];
+  // Fallback: compute intervals from chord name
+  const root = chordName.match(/^[A-G][#b]?/)?.[0] || "C";
+  const suffix = chordName.slice(root.length);
+  // Resolve flat roots to sharp equivalent for CHROMA_IDX lookup
+  const FLAT_TO_SHARP = { Cb:"B", Db:"C#", Eb:"D#", Fb:"E", Gb:"F#", Ab:"G#", Bb:"A#" };
+  const resolvedRoot = FLAT_TO_SHARP[root] || root;
+  const ri = CHROMA_IDX[resolvedRoot] ?? 0;
+  const ALL = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const isMinor = suffix.startsWith("m") && !suffix.startsWith("maj");
+  let intervals = [0, isMinor ? 3 : 4, 7];
+  if (suffix.includes("maj7"))                     intervals.push(11);
+  else if (suffix.includes("7") || suffix.includes("dom")) intervals.push(10);
+  if (suffix.includes("9"))  intervals.push(14);
+  if (suffix.includes("add9")) intervals.push(14);
+  return intervals.map(i => ALL[(ri + i) % 12]);
+}
+
+// ── 6. QR / Share ─────────────────────────────────────────────
+function buildShareUrl() {
+  const track = state.currentTrack;
+  if (!track) return null;
+  const key = `${track.artists[0] || ""}||${track.name}`;
+  const url = new URL(window.location.href);
+  url.search = "";
+  url.searchParams.set("view", encodeURIComponent(key));
+  return url.toString();
+}
+
+function showQR() {
+  const url = buildShareUrl();
+  if (!url) return;
+
+  const modal   = document.getElementById("qr-modal");
+  const overlay = document.getElementById("qr-overlay");
+  const canvas  = document.getElementById("qr-canvas");
+  const lbl     = document.getElementById("qr-song-label");
+
+  canvas.innerHTML = "";
+  try {
+    if (typeof QRCode === "undefined") throw new Error("QRCode library not loaded");
+    new QRCode(canvas, { text: url, width: 200, height: 200, colorDark:"#000", colorLight:"#fff", correctLevel: QRCode.CorrectLevel.M });
+  } catch(e) {
+    // Fallback: show the raw URL so user can copy it manually
+    canvas.innerHTML = `<div style="padding:12px;font-size:11px;word-break:break-all;color:#333;max-width:200px">${url}</div>`;
+  }
+  if (lbl && state.currentTrack) lbl.textContent = `${state.currentTrack.name} — ${state.currentTrack.artists[0]}`;
+
+  modal.classList.add("open");
+  overlay.classList.add("open");
+}
+
+function closeQR() {
+  document.getElementById("qr-modal")?.classList.remove("open");
+  document.getElementById("qr-overlay")?.classList.remove("open");
+}
+
+async function copyShareUrl() {
+  const url = buildShareUrl();
+  if (!url) return;
+  try {
+    await navigator.clipboard.writeText(url);
+    const btn = document.querySelector("#qr-modal .button-secondary");
+    if (btn) { btn.textContent = "¡Copiado!"; setTimeout(() => btn.textContent = "Copiar enlace", 2000); }
+  } catch(_) {}
+}
+
+// Share mode: load chords from URL ?view=artist||song without Spotify
+async function checkShareMode() {
+  const params = new URLSearchParams(window.location.search);
+  const viewParam = params.get("view");
+  if (!viewParam) return;
+
+  const decoded = decodeURIComponent(viewParam);
+  const [artist, ...titleParts] = decoded.split("||");
+  const title = titleParts.join("||");
+  if (!artist || !title) return;
+
+  state.shareMode = true;
+  state.currentTrack = { id: null, name: title, artists: [artist], album: "", image: "", durationMs: 0, progressMs: 0, isPlaying: false, spotifyUrl: "" };
+  state.lastTrackKey = buildTrackLookupKey(state.currentTrack);
+
+  // Show a share banner
+  const kicker = document.getElementById("track-kicker");
+  if (kicker) kicker.textContent = "👥 Modo vista compartida";
+  const titleEl = document.getElementById("track-title");
+  const artistEl = document.getElementById("track-artist");
+  if (titleEl) titleEl.textContent = title;
+  if (artistEl) artistEl.textContent = artist;
+
+  setPlaybackStatus("warn", "Vista compartida");
+  showScrollControls(true);
+
+  resetChords("warn", "Cargando…");
+  renderAll();
+
+  await fetchChordsForTrack(state.currentTrack, state.lastTrackKey);
+  renderAll();
+}
+
+// ── 7. Usage stats ────────────────────────────────────────────
+function loadStats() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEYS.stats) || "{}");
+  } catch(_) { return {}; }
+}
+
+function saveStats(stats) {
+  try { localStorage.setItem(STORAGE_KEYS.stats, JSON.stringify(stats)); } catch(_) {}
+}
+
+function recordStats(track, detectedKey) {
+  const stats = loadStats();
+  stats.total = (stats.total || 0) + 1;
+
+  // Artists
+  const artist = track.artists[0] || "Desconocido";
+  stats.artists = stats.artists || {};
+  stats.artists[artist] = (stats.artists[artist] || 0) + 1;
+
+  // Keys
+  if (detectedKey) {
+    stats.keys = stats.keys || {};
+    stats.keys[detectedKey.label] = (stats.keys[detectedKey.label] || 0) + 1;
+  }
+
+  saveStats(stats);
+}
+
+function renderStats() {
+  const el = document.getElementById("stats-display");
+  if (!el) return;
+  const stats = loadStats();
+
+  if (!stats.total) {
+    el.innerHTML = `<p style="color:var(--text-3);font-size:12px;grid-column:span 2">Sin estadísticas aún — toca algunas canciones.</p>`;
+    return;
+  }
+
+  // Top artist
+  const topArtist = Object.entries(stats.artists || {}).sort((a,b) => b[1]-a[1])[0];
+  // Top key
+  const topKey    = Object.entries(stats.keys    || {}).sort((a,b) => b[1]-a[1])[0];
+  // Unique artists
+  const uniqueArtists = Object.keys(stats.artists || {}).length;
+
+  el.innerHTML = `
+    <div class="stat-item">
+      <span class="stat-value">${stats.total}</span>
+      <span class="stat-label">Canciones</span>
+    </div>
+    <div class="stat-item">
+      <span class="stat-value">${uniqueArtists}</span>
+      <span class="stat-label">Artistas</span>
+    </div>
+    ${topArtist ? `
+    <div class="stat-item" style="grid-column:span 2">
+      <span class="stat-value" style="font-size:14px">${topArtist[0]}</span>
+      <span class="stat-label">Artista favorito (${topArtist[1]}×)</span>
+    </div>` : ""}
+    ${topKey ? `
+    <div class="stat-item" style="grid-column:span 2">
+      <span class="stat-value" style="font-size:14px">${topKey[0]}</span>
+      <span class="stat-label">Tonalidad favorita (${topKey[1]}×)</span>
+    </div>` : ""}
+  `;
+}
+
+// openSettings refreshes stats — patched directly in the original function
