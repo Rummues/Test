@@ -279,6 +279,8 @@ html, body {
   font-size: 13px;
   line-height: 1.5;
   color: rgba(255,255,255,0.85);
+  overflow: hidden;
+  word-break: break-word;
 }
 
 /* A row contains one chord+lyric pair, wraps naturally */
@@ -319,10 +321,19 @@ html, body {
   color: rgba(255,255,255,0.85);
   font-size: 13px;
   line-height: 1.7;
-  white-space: pre;
+  white-space: pre-wrap;
+  word-break: break-word;
+  min-width: 0;
 }
 
-/* Chord-only row (no paired lyric) */
+/* The inline pair — allows wrapping */
+.cs-pair {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  row-gap: 0;
+  max-width: 100%;
+}
 .cs-chords-only .cs-chord {
   margin-bottom: 4px;
 }
