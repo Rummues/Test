@@ -431,9 +431,14 @@ async function fetchSpotifyPlayback() {
 }
 
 async function loadTrackResources(track, trackKey) {
-  // On new song: scroll to top, reset teleprompter
+  // On new song: scroll to chords card, reset teleprompter
   setTimeout(() => {
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    const chordsCard = document.querySelector(".chords-card");
+    if (chordsCard) {
+      chordsCard.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
   }, 200);
   if (el.chordsSections) el.chordsSections.scrollTop = 0;
   state.scroll.userPaused = true;
@@ -728,42 +733,20 @@ function transposeChord(chord, semitones) {
 
 // Wrap chord tokens in <span class="chord"> — ONLY on chord-dominant lines
 function highlightChords(safeText) {
-  // Comprehensive chord pattern:
-  // Root: A-G + optional # or b
-  // Quality + extensions including alterations like m7b5, maj9#11, sus4, etc.
-  const CHORD_RE = /^[A-G][#b]?(?:M(?:aj)?|maj|min|dim|aug|sus[24]?|add)?[0-9]?[0-9]?(?:[#b][0-9]+)*(?:m(?:aj)?[0-9]?(?:[#b][0-9]+)?)?(?:\/[A-G][#b]?)?$/;
-
-  // Slightly looser version for the line-level test (strips trailing punctuation)
-  const isChordToken = (t) => {
-    // Remove HTML entities and tags
-    const clean = t.replace(/&[a-z0-9#]+;/gi, "").replace(/<[^>]*>/g, "").replace(/[()[\]]/g, "");
-    if (!clean || clean.length > 10) return false;
-    // Must start with A-G
-    if (!/^[A-G]/.test(clean)) return false;
-    return CHORD_RE.test(clean);
-  };
-
   return safeText.split("\n").map(line => {
-    // Never highlight section markers or capo lines
     if (/^\s*[\[—(]/.test(line)) return line;
-
     const stripped = line.replace(/<[^>]*>/g, "");
     const tokens = stripped.trim().split(/\s+/).filter(Boolean);
     if (tokens.length === 0) return line;
-
-    const chordCount = tokens.filter(isChordToken).length;
-
-    // Only highlight if this is predominantly a chord line
+    const isChord = t => {
+      const c = t.replace(/&[a-z0-9#]+;/gi,"").replace(/<[^>]*>/g,"").replace(/[()[\]]/g,"");
+      return c.length > 0 && c.length <= 12 && MASTER_CHORD_RE.test(c);
+    };
+    const chordCount = tokens.filter(isChord).length;
     if (chordCount === 0 || chordCount / tokens.length < 0.45) return line;
-
-    // Replace chord tokens inline — comprehensive pattern
     return line.replace(
-      /(?<![A-Za-z])([A-G][#b]?(?:(?:maj|min|dim|aug|sus[24]?|add)[0-9]{0,2}|m(?:aj)?[0-9]?|M[0-9]?)?(?:[0-9]{1,2})?(?:[#b][0-9])?(?:\/[A-G][#b]?)?)(?![A-Za-z])/g,
-      (match, chord) => {
-        // Final check: must start with valid root
-        if (!/^[A-G]/.test(chord)) return match;
-        return `<span class="chord">${chord}</span>`;
-      }
+      new RegExp('(?<![A-Za-z])(' + MASTER_CHORD_INLINE.source + ')(?![A-Za-z0-9])', 'g'),
+      (match, chord) => /^[A-G]/.test(chord) ? `<span class="chord">${chord}</span>` : match
     );
   }).join("\n");
 }
@@ -771,15 +754,14 @@ function highlightChords(safeText) {
 // without touching lyric words that start with those letters
 function applyTransposeToSheet(text, semitones) {
   if (!semitones) return text;
-  const chordToken = /^[A-G][#b]?(?:m(?:aj)?|dim|aug|sus[24]?|add)?[0-9]?(?:\/[A-G][#b]?)?$/;
   return text.split("\n").map(line => {
     const tokens = line.trim().split(/(\s+)/);
     const wordTokens = tokens.filter(t => t.trim());
     if (wordTokens.length === 0) return line;
-    const chordCount = wordTokens.filter(t => chordToken.test(t)).length;
+    const chordCount = wordTokens.filter(t => MASTER_CHORD_RE.test(t.trim())).length;
     if (chordCount / wordTokens.length >= 0.5) {
       return tokens.map(t =>
-        chordToken.test(t.trim()) ? transposeChord(t.trim(), semitones) + (t.endsWith(" ") ? " " : "") : t
+        MASTER_CHORD_RE.test(t.trim()) ? transposeChord(t.trim(), semitones) + (t.endsWith(" ") ? " " : "") : t
       ).join("");
     }
     return line;
@@ -1348,7 +1330,14 @@ function renderSourceSwitcher() {
 // chords float above the matching syllable. Lines wrap naturally
 // on mobile without ever misaligning chords and lyrics.
 
-const CHORD_TOKEN_RE = /[A-G][#b]?(?:M(?:aj)?|maj|min|dim|aug|sus[24]?|add)?[0-9]{0,2}(?:[#b][0-9]+)*(?:m(?:aj)?[0-9]?(?:[#b][0-9]+)?)?(?:\/[A-G][#b]?)?/g;
+// ── Master chord regex — covers all real-world chord types ──────
+// Root: A-G + optional # or b
+// Quality: maj/ma/M, min/m, dim, aug, sus, add + all extensions (7,9,11,13)
+// Alterations: b5 #5 b9 #9 #11 b13 etc. (any number of them)
+// Slash: /[A-G][#b]?
+const MASTER_CHORD_RE = /^[A-G][#b]?(?:(?:maj|ma|M)(?:7|9|11|13)?|min(?:7|9|11|13)?|m(?:7|9|11|13|6)?|dim(?:7)?|aug(?:7)?|sus(?:2|4)?|add(?:2|4|9|11))?(?:[0-9]{1,2})?(?:[#b][0-9]+)*(?:\/[A-G][#b]?)?$/;
+// Non-anchored version for inline matching (used in token extraction)
+const MASTER_CHORD_INLINE = /[A-G][#b]?(?:(?:maj|ma|M)(?:7|9|11|13)?|min(?:7|9|11|13)?|m(?:7|9|11|13|6)?|dim(?:7)?|aug(?:7)?|sus(?:2|4)?|add(?:2|4|9|11))?(?:[0-9]{1,2})?(?:[#b][0-9]+)*(?:\/[A-G][#b]?)?/g;
 
 function isChordOnlyLine(line) {
   const stripped = line.trim();
@@ -1356,16 +1345,14 @@ function isChordOnlyLine(line) {
   if (/^[\[—(─]/.test(stripped)) return false;
   const tokens = stripped.split(/\s+/).filter(Boolean);
   if (!tokens.length) return false;
-  const re = /^[A-G][#b]?(?:M(?:aj)?|maj|min|dim|aug|sus[24]?|add)?[0-9]{0,2}(?:[#b][0-9]+)*(?:m(?:aj)?[0-9]?(?:[#b][0-9]+)?)?(?:\/[A-G][#b]?)?$/;
-  const chordCount = tokens.filter(t => re.test(t)).length;
+  const chordCount = tokens.filter(t => MASTER_CHORD_RE.test(t)).length;
   return chordCount > 0 && chordCount / tokens.length >= 0.5;
 }
 
 function parseChordsFromLine(line) {
-  // Returns [{pos, chord}, ...]
   const result = [];
   let m;
-  const re = new RegExp(CHORD_TOKEN_RE.source, 'g');
+  const re = new RegExp(MASTER_CHORD_INLINE.source, 'g');
   while ((m = re.exec(line)) !== null) {
     result.push({ pos: m.index, chord: m[0] });
   }
