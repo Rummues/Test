@@ -46,7 +46,14 @@ const state = {
   chordFontSize: 13,
   instrument: "guitar",
   shareMode: false,
+  room: { code: null, isHost: false, pollTimer: null },
+  prefetchedKey: null,   // key of the track whose chords are prefetched
 };
+
+// In-memory prefetch cache: trackKey → { sources, detectedKey }
+// Kept small (max 3 entries) — only next song matters
+const prefetchCache = new Map();
+const PREFETCH_MAX  = 3;
 
 const el = {};
 
@@ -69,7 +76,8 @@ async function boot() {
   hydrateState();
   loadUserPrefs();
   renderAll();
-  await checkShareMode();
+  const isRoomGuest = await checkRoomGuestMode();
+  if (!isRoomGuest) await checkShareMode();
   await maybeFinishSpotifyLogin();
   if (state.tokens && !state.shareMode) startSpotifyPolling();
   else startProgressLoop();
@@ -464,6 +472,11 @@ async function fetchSpotifyPlayback() {
 
     renderAll();
 
+    // Broadcast to live room if hosting
+    if (state.room.isHost && state.room.code) {
+      broadcastRoom(nextTrack).catch(() => {});
+    }
+
     if (trackChanged) {
       state.lastTrackKey = nextKey;
       await loadTrackResources(nextTrack, nextKey);
@@ -475,20 +488,20 @@ async function fetchSpotifyPlayback() {
 }
 
 async function loadTrackResources(track, trackKey) {
-  // On new song: scroll to chords card, reset teleprompter
-  setTimeout(() => {
-    const chordsCard = document.querySelector(".chords-card");
-    if (chordsCard) {
-      chordsCard.scrollIntoView({ behavior: "smooth", block: "start" });
-    } else {
-      window.scrollTo({ top: 0, behavior: "smooth" });
-    }
-  }, 200);
+  // Prevent browser scroll-restoration from fighting us
+  if ("scrollRestoration" in history) history.scrollRestoration = "manual";
+
+  // Scroll to top immediately and again after render settles
+  window.scrollTo({ top: 0, behavior: "instant" });
+  setTimeout(() => window.scrollTo({ top: 0, behavior: "instant" }), 50);
+  setTimeout(() => window.scrollTo({ top: 0, behavior: "instant" }), 300);
+
   if (el.chordsSections) el.chordsSections.scrollTop = 0;
   state.scroll.userPaused = true;
   // syncMode persists across songs — recalibrate _acc and _lastTime
   state.scroll._acc       = 0;
   state.scroll._lastTime  = null;
+  state.scroll._wasAutoPlaying = false;
   state.enharmonic   = false;
   state.bpm          = null;
   state.detectedKey  = null;
@@ -1084,6 +1097,39 @@ async function fetchChordsForTrack(track, trackKey) {
   const title  = cleanTrackLookupText(track.name);
   const artist = track.artists[0] || "";
 
+  // ── Prefetch cache hit? ───────────────────────────────────
+  if (prefetchCache.has(trackKey)) {
+    const cached = prefetchCache.get(trackKey);
+    prefetchCache.delete(trackKey); // consume it
+    console.log("[prefetch] cache hit →", track.name);
+
+    state.chordsTone     = "live";
+    state.chordsText     = "Encontrados";
+    state.chordsData     = cached.sources[0];
+    state.chordsSources  = cached.sources;
+    state.chordsSourceIdx = 0;
+    state.transpose      = 0;
+    if (el.transposeLabel) el.transposeLabel.textContent = "0";
+    showScrollControls(true);
+    state.detectedKey = cached.detectedKey;
+    updateKeyBadge();
+    if (state.currentTrack?.id && state.tokens) {
+      fetchAudioFeatures(state.currentTrack.id).catch(() => {});
+    }
+    if (state.currentTrack) recordStats(state.currentTrack, state.detectedKey);
+    if (state.scroll.syncMode) {
+      setTimeout(() => {
+        state.scroll.userPaused = false;
+        state.scroll._acc = 0; state.scroll._lastTime = null;
+        updateScrollUI();
+      }, 800);
+    }
+    renderChords();
+    renderSourceSwitcher();
+    return;
+  }
+  // ─────────────────────────────────────────────────────────
+
   state.chordsTone = "warn";
   state.chordsText = "Buscando…";
   state.chordsData = null;
@@ -1153,6 +1199,11 @@ async function fetchChordsForTrack(track, trackKey) {
         updateScrollUI();
       }, 800);
     }
+
+    // Kick off prefetch for next song (non-blocking, after a short delay
+    // so the current song's network requests finish first)
+    setTimeout(() => prefetchNextTrack(), 3000);
+
   } else {
     state.chordsTone = "warn";
     state.chordsText = "No encontrados";
@@ -1188,7 +1239,6 @@ function startProgressLoop() {
   state.progressTimer = window.setInterval(() => {
     updateProgressDisplay();
     renderSyncLabel();
-    highlightActiveSection();
   }, 500);
   startTeleprompterLoop();
 }
@@ -2098,10 +2148,16 @@ function renderDiagram(chordName, voicingIdx) {
   if (!content) return;
 
   if (state.instrument === "piano") {
-    const notes = getChordNotes(chordName);
-    content.innerHTML = renderPianoDiagram(notes);
-    if (tabs) tabs.innerHTML = "";
-    if (hint) hint.textContent = notes.length ? notes.join(" – ") : "";
+    const inversions = getPianoInversions(chordName);
+    const idx = Math.max(0, Math.min(voicingIdx || 0, inversions.length - 1));
+    const inv = inversions[idx];
+    content.innerHTML = renderPianoDiagram(inv.notes, inv.bassNote);
+    if (tabs) {
+      tabs.innerHTML = inversions.length > 1
+        ? inversions.map((v,i) => `<button class="diagram-tab${i===idx?" active":""}" onclick="renderDiagram('${chordName}',${i})">${v.label}</button>`).join("")
+        : "";
+    }
+    if (hint) hint.textContent = inv.notes.join(" – ");
     return;
   }
 
@@ -2199,49 +2255,135 @@ function renderGuitarDiagram(v) {
   return svg;
 }
 
-function renderPianoDiagram(notes) {
-  const noteOrder = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
-  const noteSet = new Set(notes);
-  const OCTAVES = 1;
-  const WW = 28, WH = 90, BW = 18, BH = 58;
-  const whiteNotes = ["C","D","E","F","G","A","B"];
-  const blackNotes = { "C#":1, "D#":2, "F#":4, "G#":5, "A#":6 };
-  const totalWhite = 7 * OCTAVES + 1;
-  const svgW = totalWhite * WW + 4;
+// Get chord color from CSS — if white, fall back to green for visibility
+function getChordColorForDiagram() {
+  const raw = getComputedStyle(document.documentElement)
+    .getPropertyValue("--chord-color").trim();
+  // White or near-white → use green
+  if (!raw || raw === "#ffffff" || raw === "white" || raw === "rgb(255,255,255)") {
+    return "#30d158";
+  }
+  return raw;
+}
 
-  let whites = "", blacks = "", labels = "";
-  let wx = 2;
-  for (let oct = 0; oct < OCTAVES + 1; oct++) {
-    for (const n of whiteNotes) {
-      if (oct === OCTAVES && n !== "C") break;
-      const note = n; // octave ignored for coloring
-      const isLit = noteSet.has(note);
-      whites += `<rect x="${wx}" y="2" width="${WW-2}" height="${WH}" rx="4"
-        fill="${isLit ? "var(--chord-color)" : "rgba(255,255,255,.92)"}"
-        stroke="rgba(0,0,0,.3)" stroke-width="1"/>`;
-      if (isLit) labels += `<text x="${wx + WW/2 - 1}" y="${2 + WH - 8}" font-size="9" font-weight="700"
-        fill="rgba(0,0,0,.7)" text-anchor="middle" font-family="sans-serif">${n}</text>`;
-      wx += WW;
+// Build all inversions of a chord: root, 1st, 2nd (, 3rd for 7ths)
+function getPianoInversions(chordName) {
+  const notes = getChordNotes(chordName);
+  if (!notes.length) return [{ label:"Root", notes, bassNote: notes[0] }];
+  const labels = ["Root", "1ª inv", "2ª inv", "3ª inv"];
+  return notes.map((_, i) => {
+    const rotated = [...notes.slice(i), ...notes.slice(0, i)];
+    return { label: labels[i] || `${i}ª`, notes: rotated, bassNote: rotated[0] };
+  });
+}
+
+// Piano SVG: 2 octaves (C to C, 15 white keys), highlights notes with octave awareness
+function renderPianoDiagram(notes, bassNote) {
+  const chordColor = getChordColorForDiagram();
+  const ALL     = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
+  const WHITE   = ["C","D","E","F","G","A","B"];
+  // Black key positions within an octave (0-indexed among white keys)
+  const BLACK_AFTER = { "C#": 0, "D#": 1, "F#": 3, "G#": 4, "A#": 5 };
+
+  const WW = 26, WH = 88, BW = 16, BH = 54;
+  // 2 full octaves = 14 white keys + 1 closing C = 15 white keys
+  const TOTAL_WHITES = 15;
+  const svgW = TOTAL_WHITES * WW + 4;
+  const svgH = WH + 24;
+
+  // Assign octave to each note intelligently:
+  // Bass note → octave 4 (lower), rest → octave 4 or 5 going upward
+  function assignOctaves(notes) {
+    if (!notes.length) return [];
+    const result = [];
+    let currentOct = 4;
+    let prevIdx = -1;
+    for (const n of notes) {
+      const idx = ALL.indexOf(n);
+      if (idx === -1) { result.push({ n, oct: currentOct }); continue; }
+      if (prevIdx !== -1 && idx <= prevIdx) currentOct++; // wrap up
+      result.push({ n, oct: currentOct });
+      prevIdx = idx;
     }
+    return result;
   }
 
-  // Black keys
-  wx = 2;
-  const blackOffset = { "C#": 1, "D#": 2, "F#": 4, "G#": 5, "A#": 6 };
-  for (let oct = 0; oct < OCTAVES; oct++) {
-    let baseX = 2 + oct * 7 * WW;
-    for (const [n, pos] of Object.entries(blackOffset)) {
-      const isLit = noteSet.has(n);
-      const bx = baseX + (pos * WW) - BW/2;
+  // Map a note+octave to white-key x position
+  function noteToX(n, oct) {
+    const octOffset = (oct - 4) * 7; // 7 whites per octave
+    const wIdx = WHITE.indexOf(n);
+    if (wIdx !== -1) return (octOffset + wIdx) * WW + 2;
+    // Black key: find parent white
+    const blackParents = { "C#":"C","D#":"D","F#":"F","G#":"G","A#":"A" };
+    const parent = blackParents[n];
+    const pIdx = WHITE.indexOf(parent);
+    return (octOffset + pIdx) * WW + 2 + WW - BW / 2;
+  }
+
+  const octaved = assignOctaves(notes);
+  const litSet  = new Set(octaved.map(({n, oct}) => `${n}${oct}`));
+  const bassKey = octaved.length > 0 ? `${octaved[0].n}${octaved[0].oct}` : null;
+
+  let whites = "", blacks = "", wLabels = "", bLabels = "";
+
+  // Draw all white keys for 2 octaves + closing C
+  for (let oct = 4; oct <= 5; oct++) {
+    for (let wi = 0; wi < WHITE.length; wi++) {
+      if (oct === 6) break;
+      const n    = WHITE[wi];
+      const key  = `${n}${oct}`;
+      const isLit  = litSet.has(key);
+      const isBass = key === bassKey;
+      const x = ((oct - 4) * 7 + wi) * WW + 2;
+      const fill = isLit ? chordColor : "rgba(255,255,255,.93)";
+      whites += `<rect x="${x}" y="2" width="${WW-2}" height="${WH}" rx="3"
+        fill="${fill}" stroke="rgba(0,0,0,.25)" stroke-width="1"/>`;
+      if (isLit) {
+        const labelFill = isBass ? "rgba(0,0,0,.9)" : "rgba(0,0,0,.65)";
+        const fw = isBass ? "900" : "700";
+        wLabels += `<text x="${x + WW/2 - 1}" y="${2 + WH - 9}" font-size="9" font-weight="${fw}"
+          fill="${labelFill}" text-anchor="middle" font-family="sans-serif">${n}${isBass ? "*" : ""}</text>`;
+      }
+    }
+  }
+  // Closing C5
+  const cX = 14 * WW + 2;
+  const cKey = "C6";
+  const cLit = litSet.has(cKey);
+  whites += `<rect x="${cX}" y="2" width="${WW-2}" height="${WH}" rx="3"
+    fill="${cLit ? chordColor : "rgba(255,255,255,.93)"}" stroke="rgba(0,0,0,.25)" stroke-width="1"/>`;
+  if (cLit) wLabels += `<text x="${cX + WW/2 - 1}" y="${2 + WH - 9}" font-size="9" font-weight="700"
+    fill="rgba(0,0,0,.65)" text-anchor="middle" font-family="sans-serif">C</text>`;
+
+  // Draw black keys
+  for (let oct = 4; oct <= 5; oct++) {
+    const octOffset = (oct - 4) * 7;
+    for (const [bn, pos] of Object.entries(BLACK_AFTER)) {
+      const key   = `${bn}${oct}`;
+      const isLit  = litSet.has(key);
+      const isBass = key === bassKey;
+      const bx = (octOffset + pos) * WW + 2 + WW - BW / 2;
+      const fill = isLit ? chordColor : "rgba(22,22,26,.97)";
       blacks += `<rect x="${bx}" y="2" width="${BW}" height="${BH}" rx="3"
-        fill="${isLit ? "var(--chord-color)" : "rgba(20,20,22,.95)"}"
-        stroke="rgba(255,255,255,.1)" stroke-width="1"/>`;
-      if (isLit) labels += `<text x="${bx + BW/2}" y="${2 + BH - 7}" font-size="8" font-weight="700"
-        fill="${isLit ? "rgba(0,0,0,.7)" : "rgba(255,255,255,.4)"}" text-anchor="middle" font-family="sans-serif">${n}</text>`;
+        fill="${fill}" stroke="rgba(255,255,255,.08)" stroke-width="1"/>`;
+      if (isLit) {
+        const labelFill = isBass ? "#fff" : "rgba(255,255,255,.8)";
+        const fw = isBass ? "900" : "700";
+        bLabels += `<text x="${bx + BW/2}" y="${2 + BH - 7}" font-size="8" font-weight="${fw}"
+          fill="${labelFill}" text-anchor="middle" font-family="sans-serif">${bn.replace("#","#")}${isBass ? "*" : ""}</text>`;
+      }
     }
   }
 
-  return `<svg width="${svgW}" height="${WH + 6}" viewBox="0 0 ${svgW} ${WH + 6}">${whites}${blacks}${labels}</svg>`;
+  // Octave labels at bottom
+  let octLabels = "";
+  for (let oct = 4; oct <= 5; oct++) {
+    const x = ((oct - 4) * 7) * WW + 2 + WW * 3;
+    octLabels += `<text x="${x}" y="${svgH - 4}" font-size="8" fill="rgba(255,255,255,.2)"
+      text-anchor="middle" font-family="sans-serif">oct ${oct}</text>`;
+  }
+
+  return `<svg width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}" style="max-width:100%">${whites}${blacks}${wLabels}${bLabels}${octLabels}</svg>`;
 }
 
 // ── Chord Database ────────────────────────────────────────────
@@ -2412,6 +2554,343 @@ async function checkShareMode() {
   renderAll();
 }
 
+
+// ═══════════════════════════════════════════════════════════════
+//  LIVE SESSION — room-based sharing via Cloudflare Worker
+// ═══════════════════════════════════════════════════════════════
+
+function generateRoomCode() {
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no confusable chars
+  return Array.from(crypto.getRandomValues(new Uint8Array(6)))
+    .map(b => chars[b % chars.length]).join("");
+}
+
+function getRoomUrl(code) {
+  const base = state.settings.workerUrl;
+  return `${base}/?room=${encodeURIComponent(code)}`;
+}
+
+// Host: POST current track to room
+async function broadcastRoom(track) {
+  if (!state.room.code || !state.settings.workerUrl) return;
+  const payload = {
+    id:         track.id,
+    name:       track.name,
+    artists:    track.artists,
+    album:      track.album,
+    image:      track.image,
+    durationMs: track.durationMs,
+    progressMs: track.progressMs,
+    isPlaying:  track.isPlaying,
+    spotifyUrl: track.spotifyUrl,
+    sentAt:     Date.now(),
+  };
+  try {
+    await fetch(getRoomUrl(state.room.code), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+  } catch(_) {}
+}
+
+// Guest: start polling room
+function startRoomGuestPolling(code) {
+  stopRoomPolling();
+  state.room.code    = code;
+  state.room.isHost  = false;
+  state.room.pollTimer = window.setInterval(() => pollRoomAsGuest(), 2000);
+  pollRoomAsGuest(); // immediate first poll
+}
+
+function stopRoomPolling() {
+  if (state.room.pollTimer) { window.clearInterval(state.room.pollTimer); state.room.pollTimer = null; }
+}
+
+async function pollRoomAsGuest() {
+  if (!state.room.code || !state.settings.workerUrl) return;
+  try {
+    const res  = await fetch(getRoomUrl(state.room.code));
+    if (!res.ok) return;
+    const data = await res.json();
+    if (!data || !data.name) return;
+
+    // Adjust progressMs for network latency
+    if (data.isPlaying && data.sentAt) {
+      const lag = Date.now() - data.sentAt;
+      data.progressMs = Math.min((data.progressMs || 0) + lag, data.durationMs || 0);
+    }
+
+    const nextKey = buildTrackLookupKey(data);
+    if (nextKey === state.lastTrackKey) {
+      // Same song — just update progress
+      if (state.currentTrack) {
+        state.currentTrack.progressMs = data.progressMs;
+        state.currentTrack.isPlaying  = data.isPlaying;
+        state.lastSyncAt = Date.now();
+      }
+      return;
+    }
+
+    // New song!
+    state.currentTrack = data;
+    state.lastSyncAt   = Date.now();
+    setPlaybackStatus(data.isPlaying ? "live" : "warn",
+      data.isPlaying ? "En vivo 👥" : "En pausa 👥");
+    renderAll();
+    state.lastTrackKey = nextKey;
+    await loadTrackResources(data, nextKey);
+  } catch(_) {}
+}
+
+// UI helpers
+function startRoom() {
+  const code = generateRoomCode();
+  state.room.code   = code;
+  state.room.isHost = true;
+  stopRoomPolling(); // host doesn't poll
+  updateRoomUI();
+  showRoomModal();
+}
+
+function joinRoom() {
+  const input = document.getElementById("room-code-input");
+  const code  = (input?.value || "").trim().toUpperCase();
+  if (code.length < 4) { alert("Escribe el código de sala"); return; }
+  state.shareMode = true;
+  state.room.code = code;
+  state.room.isHost = false;
+  updateRoomUI();
+  startRoomGuestPolling(code);
+  closeQR();
+}
+
+function leaveRoom() {
+  stopRoomPolling();
+  state.room = { code: null, isHost: false, pollTimer: null };
+  state.shareMode = false;
+  updateRoomUI();
+}
+
+function updateRoomUI() {
+  const badge = document.getElementById("room-badge");
+  const leaveBtn = document.getElementById("room-leave-btn");
+  if (badge) {
+    if (state.room.code) {
+      badge.textContent = state.room.isHost ? `🎸 Sala: ${state.room.code}` : `👥 Sala: ${state.room.code}`;
+      badge.style.display = "inline-block";
+    } else {
+      badge.style.display = "none";
+    }
+  }
+  if (leaveBtn) leaveBtn.style.display = state.room.code ? "block" : "none";
+}
+
+function showRoomModal() {
+  // Switch to "live" tab in the QR modal and show room code + QR
+  const modal   = document.getElementById("qr-modal");
+  const overlay = document.getElementById("qr-overlay");
+  if (!modal) return;
+
+  // Build live room QR
+  const guestUrl = new URL(window.location.href);
+  guestUrl.search = "";
+  guestUrl.searchParams.set("room", state.room.code);
+  const url = guestUrl.toString();
+
+  const canvas = document.getElementById("qr-canvas");
+  const lbl    = document.getElementById("qr-song-label");
+  canvas.innerHTML = "";
+  try {
+    if (typeof QRCode === "undefined") throw new Error();
+    new QRCode(canvas, { text: url, width: 200, height: 200, colorDark:"#000", colorLight:"#fff", correctLevel: QRCode.CorrectLevel.M });
+  } catch(_) {
+    canvas.innerHTML = `<div style="padding:12px;font-size:11px;word-break:break-all;color:#333">${url}</div>`;
+  }
+  if (lbl) lbl.textContent = `Código: ${state.room.code}`;
+
+  // Update modal title
+  const title = modal.querySelector(".settings-header span");
+  if (title) title.textContent = "Sala en vivo";
+
+  modal.classList.add("open");
+  overlay.classList.add("open");
+}
+
+// Check if opening as a room guest (?room=CODE in URL)
+async function checkRoomGuestMode() {
+  const params = new URLSearchParams(window.location.search);
+  const roomCode = params.get("room");
+  if (!roomCode) return false;
+
+  state.shareMode = true;
+  state.room.code = roomCode.toUpperCase();
+  state.room.isHost = false;
+  updateRoomUI();
+
+  setPlaybackStatus("warn", "Conectando a sala…");
+  renderAll();
+
+  // Clean URL
+  const clean = new URL(window.location.href);
+  clean.searchParams.delete("room");
+  history.replaceState({}, "", clean.toString());
+
+  startRoomGuestPolling(state.room.code);
+  return true;
+}
+
+
+// QR modal tab switching
+function switchQRTab(tab) {
+  document.getElementById("qr-tab-static").classList.toggle("active", tab === "static");
+  document.getElementById("qr-tab-live").classList.toggle("active",   tab === "live");
+  document.getElementById("qr-panel-static").style.display = tab === "static" ? "block" : "none";
+  document.getElementById("qr-panel-live").style.display   = tab === "live"   ? "block" : "none";
+
+  if (tab === "live" && state.room.isHost && state.room.code) {
+    // Already hosting — show host panel
+    document.getElementById("live-host-panel").style.display = "block";
+    document.getElementById("live-join-panel").style.display = "none";
+    renderLiveQR();
+  } else if (tab === "live") {
+    document.getElementById("live-host-panel").style.display = "none";
+    document.getElementById("live-join-panel").style.display = "block";
+  }
+}
+
+function renderLiveQR() {
+  if (!state.room.code) return;
+  const guestUrl = new URL(window.location.href);
+  guestUrl.search = "";
+  guestUrl.searchParams.set("room", state.room.code);
+  const url = guestUrl.toString();
+  const canvas = document.getElementById("qr-canvas-live");
+  const lbl    = document.getElementById("live-room-label");
+  if (!canvas) return;
+  canvas.innerHTML = "";
+  try {
+    if (typeof QRCode === "undefined") throw new Error();
+    new QRCode(canvas, { text: url, width: 180, height: 180, colorDark:"#000", colorLight:"#fff", correctLevel: QRCode.CorrectLevel.M });
+  } catch(_) {
+    canvas.innerHTML = `<div style="padding:10px;font-size:10px;word-break:break-all;color:#333">${url}</div>`;
+  }
+  if (lbl) lbl.textContent = `Código: ${state.room.code}`;
+}
+
+// Override showQR to also init the static panel
+const _origShowQR = showQR;
+function showQR() {
+  // Build static QR
+  const url = buildShareUrl();
+  const modal   = document.getElementById("qr-modal");
+  const overlay = document.getElementById("qr-overlay");
+  const canvas  = document.getElementById("qr-canvas");
+  const lbl     = document.getElementById("qr-song-label");
+  if (!modal) return;
+  canvas.innerHTML = "";
+  try {
+    if (typeof QRCode === "undefined") throw new Error();
+    new QRCode(canvas, { text: url || window.location.href, width: 180, height: 180, colorDark:"#000", colorLight:"#fff", correctLevel: QRCode.CorrectLevel.M });
+  } catch(_) {
+    canvas.innerHTML = `<div style="padding:10px;font-size:10px;word-break:break-all;color:#333">${url}</div>`;
+  }
+  if (lbl && state.currentTrack) lbl.textContent = `${state.currentTrack.name} — ${state.currentTrack.artists[0]}`;
+  // Default to live tab if already hosting
+  switchQRTab(state.room.isHost ? "live" : "static");
+  modal.classList.add("open");
+  overlay.classList.add("open");
+}
+
+async function copyRoomUrl() {
+  if (!state.room.code) return;
+  const guestUrl = new URL(window.location.href);
+  guestUrl.search = "";
+  guestUrl.searchParams.set("room", state.room.code);
+  try {
+    await navigator.clipboard.writeText(guestUrl.toString());
+    const btn = document.querySelector("#qr-panel-live .button-secondary");
+    if (btn) { btn.textContent = "¡Copiado!"; setTimeout(() => btn.textContent = "Copiar enlace sala", 2000); }
+  } catch(_) {}
+}
+
+// ─── Prefetch next track ──────────────────────────────────────
+async function prefetchNextTrack() {
+  if (!state.tokens?.accessToken || !state.settings.workerUrl) return;
+  if (state.shareMode) return;
+
+  try {
+    const res = await fetch("https://api.spotify.com/v1/me/player/queue", {
+      headers: { Authorization: `Bearer ${state.tokens.accessToken}` }
+    });
+    if (!res.ok) return;
+    const data = await res.json();
+
+    // queue[0] is the next track (index 0 of the upcoming queue)
+    const next = data.queue?.[0];
+    if (!next || next.type !== "track") return;
+
+    const nextTrack = {
+      id:         next.id,
+      name:       next.name,
+      artists:    next.artists.map(a => a.name),
+      album:      next.album?.name || "",
+      image:      next.album?.images?.[0]?.url || "",
+      durationMs: next.duration_ms,
+    };
+    const nextKey = buildTrackLookupKey(nextTrack);
+
+    // Skip if already cached, already playing, or same as current
+    if (prefetchCache.has(nextKey))          return;
+    if (nextKey === state.lastTrackKey)      return;
+
+    console.log("[prefetch] fetching chords for →", nextTrack.name);
+    await prefetchChordsBackground(nextTrack, nextKey);
+
+  } catch(e) {
+    console.log("[prefetch] error:", e.message);
+  }
+}
+
+async function prefetchChordsBackground(track, trackKey) {
+  const title  = cleanTrackLookupText(track.name);
+  const artist = track.artists[0] || "";
+
+  const sources = [
+    { name: "Cifraclub",       fn: () => fetchChordsViaCifraclub(title, artist) },
+    { name: "Ultimate Guitar", fn: () => fetchChordsViaUltimateGuitar(title, artist) },
+    { name: "E-Chords",        fn: () => fetchChordsViaEChords(title, artist) },
+  ];
+
+  const found = [];
+  for (const src of sources) {
+    // Abort if the song we're prefetching is now playing (user skipped fast)
+    if (trackKey === state.lastTrackKey) return;
+    try {
+      const result = await src.fn();
+      if (result) {
+        result.source = result.source || src.name;
+        found.push(result);
+      }
+    } catch(_) {}
+  }
+
+  if (!found.length) {
+    console.log("[prefetch] no results for", track.name);
+    return;
+  }
+
+  const detectedKey = detectKeyFromSheet(found[0].content || "");
+
+  // Evict oldest entry if cache is full
+  if (prefetchCache.size >= PREFETCH_MAX) {
+    prefetchCache.delete(prefetchCache.keys().next().value);
+  }
+
+  prefetchCache.set(trackKey, { sources: found, detectedKey });
+  console.log("[prefetch] cached", track.name, "(" + found.length + " sources)");
+}
+
 // ── 7. Usage stats ────────────────────────────────────────────
 function loadStats() {
   try {
@@ -2438,6 +2917,19 @@ function recordStats(track, detectedKey) {
     stats.keys[detectedKey.label] = (stats.keys[detectedKey.label] || 0) + 1;
   }
 
+  // Songs
+  const songKey = `${track.name} — ${artist}`;
+  stats.songs = stats.songs || {};
+  stats.songs[songKey] = (stats.songs[songKey] || 0) + 1;
+
+  // BPM range (bucket by 10)
+  if (state.bpm) {
+    const bucket = Math.round(state.bpm / 10) * 10;
+    const bpmLabel = `~${bucket} BPM`;
+    stats.bpms = stats.bpms || {};
+    stats.bpms[bpmLabel] = (stats.bpms[bpmLabel] || 0) + 1;
+  }
+
   saveStats(stats);
 }
 
@@ -2451,12 +2943,12 @@ function renderStats() {
     return;
   }
 
-  // Top artist
-  const topArtist = Object.entries(stats.artists || {}).sort((a,b) => b[1]-a[1])[0];
-  // Top key
-  const topKey    = Object.entries(stats.keys    || {}).sort((a,b) => b[1]-a[1])[0];
-  // Unique artists
+  const topArtist    = Object.entries(stats.artists || {}).sort((a,b) => b[1]-a[1])[0];
+  const topKey       = Object.entries(stats.keys    || {}).sort((a,b) => b[1]-a[1])[0];
   const uniqueArtists = Object.keys(stats.artists || {}).length;
+
+  const topSong = Object.entries(stats.songs || {}).sort((a,b)=>b[1]-a[1])[0];
+  const topBpm  = Object.entries(stats.bpms  || {}).sort((a,b)=>b[1]-a[1])[0];
 
   el.innerHTML = `
     <div class="stat-item">
@@ -2465,17 +2957,27 @@ function renderStats() {
     </div>
     <div class="stat-item">
       <span class="stat-value">${uniqueArtists}</span>
-      <span class="stat-label">Artistas</span>
+      <span class="stat-label">Artistas únicos</span>
     </div>
     ${topArtist ? `
     <div class="stat-item" style="grid-column:span 2">
-      <span class="stat-value" style="font-size:14px">${topArtist[0]}</span>
+      <span class="stat-value" style="font-size:13px;line-height:1.3">${topArtist[0]}</span>
       <span class="stat-label">Artista favorito (${topArtist[1]}×)</span>
     </div>` : ""}
-    ${topKey ? `
+    ${topSong ? `
     <div class="stat-item" style="grid-column:span 2">
-      <span class="stat-value" style="font-size:14px">${topKey[0]}</span>
-      <span class="stat-label">Tonalidad favorita (${topKey[1]}×)</span>
+      <span class="stat-value" style="font-size:12px;line-height:1.3">${topSong[0]}</span>
+      <span class="stat-label">Canción más escuchada (${topSong[1]}×)</span>
+    </div>` : ""}
+    ${topKey ? `
+    <div class="stat-item">
+      <span class="stat-value" style="font-size:13px">${topKey[0]}</span>
+      <span class="stat-label">Tonalidad fav.</span>
+    </div>` : ""}
+    ${topBpm ? `
+    <div class="stat-item">
+      <span class="stat-value" style="font-size:13px">${topBpm[0]}</span>
+      <span class="stat-label">BPM favorito</span>
     </div>` : ""}
   `;
 }
