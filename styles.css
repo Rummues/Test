@@ -883,3 +883,65 @@ input, select, textarea {
   /* Extra bottom clearance for Dynamic Island models */
   bottom: calc(env(safe-area-inset-bottom, 0px) + 16px);
 }
+
+/* ══════════════════════════════════════════════════
+   LIVE ROOM + QR TABS + PIANO UPDATES
+   ══════════════════════════════════════════════════ */
+
+/* QR tabs */
+.qr-tabs {
+  display: flex; gap: 6px; margin: 12px 0 14px;
+}
+.qr-tab {
+  flex: 1; padding: 8px 0; border-radius: 10px;
+  border: 1px solid rgba(255,255,255,.10);
+  background: rgba(255,255,255,.05); color: var(--text-2);
+  font-size: 12px; font-weight: 600; cursor: pointer;
+  font-family: var(--ui); -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.qr-tab.active {
+  background: rgba(255,255,255,.14); border-color: rgba(255,255,255,.20);
+  color: var(--text);
+}
+
+/* Room join row */
+.room-join-row {
+  display: flex; gap: 8px; margin-top: 0;
+}
+.room-code-input {
+  flex: 1; background: rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.14);
+  border-radius: 10px; color: var(--text);
+  font-size: 18px; font-weight: 800; letter-spacing: .15em;
+  text-transform: uppercase; text-align: center;
+  padding: 10px; font-family: var(--mono);
+  -webkit-appearance: none;
+}
+.room-code-input::placeholder { color: var(--text-3); letter-spacing: .05em; font-weight: 400; }
+.room-code-input:focus { outline: none; border-color: var(--accent); }
+
+/* Room badge in chords card */
+.room-badge {
+  font-size: 11px; font-weight: 700;
+  color: #30d158; letter-spacing: .03em;
+  background: rgba(48,209,88,.10); border: 1px solid rgba(48,209,88,.22);
+  padding: 3px 9px; border-radius: 999px;
+  white-space: nowrap; font-family: var(--ui);
+}
+
+/* Piano diagram container scroll */
+#diagram-content {
+  display: flex; justify-content: center; padding: 10px 0;
+  overflow-x: auto; -webkit-overflow-scrolling: touch;
+}
+#diagram-content svg { overflow: visible; flex-shrink: 0; }
+
+/* Diagram modal wider on landscape */
+@media (orientation: landscape) and (max-height: 500px) {
+  #diagram-modal { max-height: 90vh; }
+}
+
+/* Remove old cs-section active styles (feature removed) */
+.cs-section.cs-active { color: rgba(255,255,255,.40); }
+.cs-section.cs-active::before { content: ''; }
