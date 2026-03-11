@@ -5,7 +5,6 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>Chords</title>
   <link rel="stylesheet" href="./styles.css">
-  <!-- QR Code library -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 </head>
 <body>
@@ -19,7 +18,6 @@
       <button onclick="closeSettings()" class="settings-close">✕</button>
     </div>
 
-    <!-- Account -->
     <div class="settings-group">
       <p class="settings-group-title">Spotify</p>
       <span class="status-pill" id="auth-status-pill">Sin conectar</span>
@@ -30,7 +28,6 @@
       </div>
     </div>
 
-    <!-- Instrument -->
     <div class="settings-group">
       <p class="settings-group-title">Instrumento (diagramas)</p>
       <div class="settings-seg">
@@ -39,7 +36,6 @@
       </div>
     </div>
 
-    <!-- Font size -->
     <div class="settings-group">
       <p class="settings-group-title">Tamaño de acordes</p>
       <div class="settings-font-row">
@@ -49,7 +45,6 @@
       </div>
     </div>
 
-    <!-- Stats -->
     <div class="settings-group">
       <p class="settings-group-title">Estadísticas</p>
       <div id="stats-display" class="stats-display"></div>
@@ -73,13 +68,44 @@
   <div id="qr-overlay" onclick="closeQR()"></div>
   <div id="qr-modal">
     <div class="settings-header">
-      <span>Compartir acordes</span>
+      <span id="qr-modal-title">Compartir acordes</span>
       <button onclick="closeQR()" class="settings-close">✕</button>
     </div>
-    <div id="qr-canvas"></div>
-    <p id="qr-song-label" class="qr-song-label"></p>
-    <p class="qr-hint">Abre esta URL en otro dispositivo para ver los mismos acordes</p>
-    <button class="button button-secondary" style="width:100%;margin-top:8px" onclick="copyShareUrl()">Copiar enlace</button>
+
+    <!-- Tabs: Estático vs En vivo -->
+    <div class="qr-tabs">
+      <button class="qr-tab active" id="qr-tab-static" onclick="switchQRTab('static')">Canción actual</button>
+      <button class="qr-tab" id="qr-tab-live" onclick="switchQRTab('live')">Sala en vivo</button>
+    </div>
+
+    <!-- Static share -->
+    <div id="qr-panel-static">
+      <div id="qr-canvas"></div>
+      <p id="qr-song-label" class="qr-song-label"></p>
+      <p class="qr-hint">Otro dispositivo verá los acordes de esta canción</p>
+      <button class="button button-secondary" style="width:100%;margin-top:8px" onclick="copyShareUrl()">Copiar enlace</button>
+    </div>
+
+    <!-- Live room -->
+    <div id="qr-panel-live" style="display:none">
+      <!-- Host: show room code + QR -->
+      <div id="live-host-panel">
+        <div id="qr-canvas-live"></div>
+        <p id="live-room-label" class="qr-song-label"></p>
+        <p class="qr-hint">Todos los que entren verán en vivo lo que estás tocando</p>
+        <button class="button button-secondary" style="width:100%;margin-top:8px" onclick="copyRoomUrl()">Copiar enlace sala</button>
+        <button class="button button-secondary" style="width:100%;margin-top:6px;color:var(--danger)" onclick="leaveRoom();closeQR()">Cerrar sala</button>
+      </div>
+      <!-- Guest or not started -->
+      <div id="live-join-panel">
+        <p class="qr-hint" style="margin-bottom:12px">Crea una sala para compartir en vivo, o entra con un código</p>
+        <button class="button button-primary" style="width:100%;margin-bottom:10px" onclick="startRoom()">🎸 Crear sala</button>
+        <div class="room-join-row">
+          <input id="room-code-input" class="room-code-input" placeholder="CÓDIGO" maxlength="8" autocapitalize="characters" autocomplete="off" spellcheck="false">
+          <button class="button button-secondary" onclick="joinRoom()">Unirse</button>
+        </div>
+      </div>
+    </div>
   </div>
 
   <div class="page-shell">
@@ -121,16 +147,14 @@
         </div>
         <div class="card-head-actions">
           <span class="key-badge-inline" id="key-badge-inline" style="display:none"></span>
-          <button class="head-icon-btn" id="share-btn" title="Compartir acordes" onclick="showQR()" style="display:none">⬡</button>
+          <span class="room-badge" id="room-badge" style="display:none"></span>
+          <button class="head-icon-btn" id="share-btn" title="Compartir / Sala en vivo" onclick="showQR()" style="display:none">⬡</button>
           <span class="status-pill status-pill-muted" id="chords-pill">Esperando</span>
         </div>
       </div>
 
       <div class="source-switcher" id="source-switcher" style="display:none"></div>
-      <div id="chords-key-badge" class="key-badge" style="display:none">
-        <span class="chords-key-val">—</span>
-        <span class="chords-tempo-val">—</span>
-      </div>
+      <div id="chords-key-badge" class="key-badge" style="display:none"></div>
       <div class="chords-chips-row" id="chords-chips-row"></div>
 
       <div id="chords-sections">
@@ -149,8 +173,8 @@
     <button class="ctrl-btn" id="scroll-faster">+</button>
     <span class="ctrl-val" id="scroll-speed-label">1×</span>
     <span class="ctrl-div"></span>
-    <button class="ctrl-btn ctrl-sync" id="sync-scroll-btn" title="Sync con canción">♫ Sync</button>
-    <button class="ctrl-btn ctrl-bpm" id="bpm-scroll-btn" title="Sync por BPM" style="display:none">♩BPM</button>
+    <button class="ctrl-btn ctrl-sync" id="sync-scroll-btn">♫ Sync</button>
+    <button class="ctrl-btn ctrl-bpm" id="bpm-scroll-btn" style="display:none">♩BPM</button>
     <span class="ctrl-div"></span>
     <button class="ctrl-btn" id="transpose-down" style="font-size:12px">−½</button>
     <span class="ctrl-val" id="transpose-label">0</span>
