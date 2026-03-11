@@ -1613,51 +1613,106 @@ async function extractAndSetBackground(imageUrl) {
 
     const img = new Image();
     img.onload = () => {
-      const SIZE = 64;
+      const SIZE = 80;
       const canvas = document.createElement("canvas");
       canvas.width = canvas.height = SIZE;
       const ctx = canvas.getContext("2d");
       ctx.drawImage(img, 0, 0, SIZE, SIZE);
       const data = ctx.getImageData(0, 0, SIZE, SIZE).data;
 
-      // Collect vibrant pixels weighted by saturation × brightness
-      let r = 0, g = 0, b = 0, w = 0;
+      // ── Hue-bucket quantization ──────────────────────────────
+      // Divide the hue wheel into N buckets, accumulate weighted
+      // saturation×brightness per bucket, pick the winner.
+      const BUCKETS = 36; // 10° per bucket
+      const bucketWeight = new Float32Array(BUCKETS);
+      const bucketR      = new Float32Array(BUCKETS);
+      const bucketG      = new Float32Array(BUCKETS);
+      const bucketB      = new Float32Array(BUCKETS);
+
       for (let i = 0; i < data.length; i += 4) {
-        const pr = data[i], pg = data[i+1], pb = data[i+2];
-        const max = Math.max(pr, pg, pb);
-        const min = Math.min(pr, pg, pb);
-        const brightness = max / 255;
-        const saturation = max === 0 ? 0 : (max - min) / max;
-        if (saturation > 0.25 && brightness > 0.15) {
-          const score = saturation * brightness;
-          r += pr * score; g += pg * score; b += pb * score; w += score;
+        const r = data[i] / 255;
+        const g = data[i+1] / 255;
+        const b = data[i+2] / 255;
+
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        const delta = max - min;
+
+        const brightness = max;
+        const saturation = max === 0 ? 0 : delta / max;
+
+        // Skip near-black, near-white, and desaturated pixels
+        if (saturation < 0.30 || brightness < 0.15 || brightness > 0.97) continue;
+
+        // Compute hue 0–360
+        let hue = 0;
+        if (delta > 0) {
+          if (max === r)      hue = 60 * (((g - b) / delta) % 6);
+          else if (max === g) hue = 60 * ((b - r) / delta + 2);
+          else                hue = 60 * ((r - g) / delta + 4);
+          if (hue < 0) hue += 360;
         }
+
+        const bucket = Math.floor(hue / (360 / BUCKETS)) % BUCKETS;
+        const score  = saturation * saturation * brightness; // square sat to penalize dull colors
+
+        bucketWeight[bucket] += score;
+        bucketR[bucket] += r * score;
+        bucketG[bucket] += g * score;
+        bucketB[bucket] += b * score;
       }
 
-      if (w === 0) return; // no vibrant pixels, keep default
-
-      let fr = Math.round(r / w);
-      let fg = Math.round(g / w);
-      let fb = Math.round(b / w);
-
-      // Boost to make it pop on dark background — target brightness ~210
-      const max = Math.max(fr, fg, fb);
-      if (max > 0 && max < 200) {
-        const boost = 210 / max;
-        fr = Math.min(255, Math.round(fr * boost));
-        fg = Math.min(255, Math.round(fg * boost));
-        fb = Math.min(255, Math.round(fb * boost));
+      // Find dominant bucket
+      let bestBucket = 0;
+      for (let i = 1; i < BUCKETS; i++) {
+        if (bucketWeight[i] > bucketWeight[bestBucket]) bestBucket = i;
       }
 
-      // Apply as CSS variable — used for chord highlighting
-      const hex = "#" + [fr, fg, fb].map(v => v.toString(16).padStart(2, "0")).join("");
+      if (bucketWeight[bestBucket] === 0) {
+        console.log("[BG] no vibrant pixels found");
+        return;
+      }
+
+      const w  = bucketWeight[bestBucket];
+      let   fr = bucketR[bestBucket] / w;
+      let   fg = bucketG[bestBucket] / w;
+      let   fb = bucketB[bestBucket] / w;
+
+      // Convert to HSL to force high saturation and readable lightness
+      const maxC  = Math.max(fr, fg, fb);
+      const minC  = Math.min(fr, fg, fb);
+      const delta2 = maxC - minC;
+      let hOut = 0;
+      if (delta2 > 0) {
+        if (maxC === fr)      hOut = 60 * (((fg - fb) / delta2) % 6);
+        else if (maxC === fg) hOut = 60 * ((fb - fr) / delta2 + 2);
+        else                  hOut = 60 * ((fr - fg) / delta2 + 4);
+        if (hOut < 0) hOut += 360;
+      }
+
+      // Force: saturation 90%, lightness 68% — always vivid and readable on dark bg
+      const s = 0.90, l = 0.68;
+      const c  = (1 - Math.abs(2 * l - 1)) * s;
+      const x  = c * (1 - Math.abs((hOut / 60) % 2 - 1));
+      const m  = l - c / 2;
+      let rr = 0, gg = 0, bb = 0;
+      const h6 = Math.floor(hOut / 60);
+      if      (h6 === 0) { rr = c; gg = x; }
+      else if (h6 === 1) { rr = x; gg = c; }
+      else if (h6 === 2) { gg = c; bb = x; }
+      else if (h6 === 3) { gg = x; bb = c; }
+      else if (h6 === 4) { rr = x; bb = c; }
+      else               { rr = c; bb = x; }
+
+      const toHex = v => Math.round((v + m) * 255).toString(16).padStart(2, "0");
+      const hex = "#" + toHex(rr) + toHex(gg) + toHex(bb);
+
       document.documentElement.style.setProperty("--chord-color", hex);
-      console.log("[BG] chord color set:", hex);
+      console.log("[BG] chord color →", hex, " hue:", Math.round(hOut) + "°");
     };
     img.src = dataUrl;
   } catch(e) {
     console.log("[BG] color extract failed:", e.message);
-    // keep default chord color
   }
 }
 
