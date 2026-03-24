@@ -5,7 +5,7 @@
 // ── CONFIGURACIÓN — edita estos dos valores ──────────────────
 const HARDCODED_CLIENT_ID  = "e15aaea6bb3349d2a828a01b208ab014";
 const HARDCODED_WORKER_URL = "https://test.millervicente.workers.dev";
-const APP_VERSION = "v20.2";
+const APP_VERSION = "v20.3";
 // ─────────────────────────────────────────────────────────────
 
 const STORAGE_KEYS = {
@@ -381,6 +381,7 @@ function disconnectSpotify() {
   resetChords();
   state.syncedLyrics = [];
   state.rttSamples = [];
+  state._lrcDomMap = null;
   setAuthStatus("muted", "Sin conectar");
   setPlaybackStatus("muted", "Esperando");
   renderAll();
@@ -529,6 +530,7 @@ async function loadTrackResources(track, trackKey) {
   state.bpm          = null;
   state.detectedKey  = null;
   state.syncedLyrics = [];   // reset until lrclib responds
+  state._lrcDomMap = null;
   if (el.enharmonicBtn) el.enharmonicBtn.classList.remove("active");
   updateKeyBadge();
   showScrollControls(false);
@@ -566,6 +568,9 @@ async function loadTrackResources(track, trackKey) {
   // Update badge & scroll UI to reflect LRC availability
   updateKeyBadge();
   updateScrollUI();
+
+  // Build LRC → DOM text mapping for precise highlight (needs both chords rendered + LRC loaded)
+  setTimeout(buildLrcDomMap, 200);
 }
 
 // ─── Lyrics ───────────────────────────────────────────────────
@@ -1736,6 +1741,8 @@ function renderChords() {
       else if (state.enharmonic === "sharp2flat") displayed = sharpToFlatText(displayed);
       el.chordsSections.innerHTML = `<div class="chord-sheet">${buildChordSheetHTML(displayed)}</div>`;
       attachChordTapHandlers();
+      // Rebuild LRC→DOM map since DOM was recreated
+      if (state.syncedLyrics && state.syncedLyrics.length) setTimeout(buildLrcDomMap, 100);
     }
     return;
   }
@@ -1748,6 +1755,7 @@ function renderChords() {
         ${(sec.lines || []).map(line => buildLyricLine(line)).join("")}
       </div>
     `).join("");
+    if (state.syncedLyrics && state.syncedLyrics.length) setTimeout(buildLrcDomMap, 100);
   }
 }
 
@@ -2283,38 +2291,113 @@ function highlightActiveSection() {
 }
 
 // ── Active line highlight — colors the line currently being played ──
-// ── Active line highlight — based on song TIME, not scroll position ──
+// ── Active line highlight — matches LRC text to actual DOM lines ──
+// Build a map: [{timeMs, domElement}] by fuzzy-matching LRC lyrics to chord sheet lines
+// Cached in state._lrcDomMap, rebuilt when chords re-render
+
+function normText(s) {
+  return (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9\s]/g, "").replace(/\s+/g, " ").trim();
+}
+
+function textSimilarity(a, b) {
+  if (!a || !b) return 0;
+  const na = normText(a), nb = normText(b);
+  if (na === nb) return 1;
+  if (!na || !nb) return 0;
+  // Check if one contains the other
+  if (na.includes(nb) || nb.includes(na)) {
+    return Math.min(na.length, nb.length) / Math.max(na.length, nb.length);
+  }
+  // Word overlap (Dice coefficient)
+  const wa = new Set(na.split(" "));
+  const wb = new Set(nb.split(" "));
+  let overlap = 0;
+  for (const w of wa) { if (wb.has(w)) overlap++; }
+  return (2 * overlap) / (wa.size + wb.size);
+}
+
+function buildLrcDomMap() {
+  if (!state.syncedLyrics || !state.syncedLyrics.length) {
+    state._lrcDomMap = null;
+    return;
+  }
+
+  const domLines = document.querySelectorAll(".cs-row, .cs-lyric");
+  if (!domLines.length) { state._lrcDomMap = null; return; }
+
+  // Extract text from each DOM line
+  const domTexts = [];
+  for (const el of domLines) {
+    // For cs-row: get all .cs-word text concatenated
+    const words = el.querySelectorAll(".cs-word");
+    const text = words.length
+      ? Array.from(words).map(w => w.textContent).join("")
+      : el.textContent;
+    domTexts.push({ el, text: text.trim() });
+  }
+
+  // Sequential matching: for each LRC line, find best DOM match starting from last position
+  const map = [];
+  let searchStart = 0;
+
+  for (const lrc of state.syncedLyrics) {
+    let bestIdx = -1;
+    let bestScore = 0;
+
+    // Search forward from last match position (with small lookback window)
+    const start = Math.max(0, searchStart - 2);
+    const end = Math.min(domTexts.length, searchStart + 15);
+
+    for (let j = start; j < end; j++) {
+      const score = textSimilarity(lrc.text, domTexts[j].text);
+      if (score > bestScore) {
+        bestScore = score;
+        bestIdx = j;
+      }
+    }
+
+    // Accept match if similarity > 0.3
+    if (bestIdx >= 0 && bestScore > 0.3) {
+      map.push({ timeMs: lrc.timeMs, el: domTexts[bestIdx].el });
+      searchStart = bestIdx + 1;
+    }
+  }
+
+  state._lrcDomMap = map.length > 0 ? map : null;
+  console.log("[LRC-highlight] mapped", map.length, "/", state.syncedLyrics.length, "lines to DOM");
+}
+
 function highlightActiveLine() {
   if (!state.currentTrack || !state.currentTrack.isPlaying || !state.currentTrack.durationMs) {
-    // Clear highlight when not playing
     document.querySelectorAll(".cs-line-active").forEach(l => l.classList.remove("cs-line-active"));
     return;
   }
 
-  const lines = document.querySelectorAll(".cs-row, .cs-lyric");
-  if (!lines.length) return;
-
   const progressMs = computeProgressMs();
-  let targetIdx = -1;
 
-  if (state.syncedLyrics && state.syncedLyrics.length > 0) {
-    // ── LRC mode: match playback time to lyric timestamp ──
-    let lrcIdx = 0;
-    for (let i = state.syncedLyrics.length - 1; i >= 0; i--) {
-      if (state.syncedLyrics[i].timeMs <= progressMs) { lrcIdx = i; break; }
+  // ── LRC + text-matched map: precise highlight ──
+  if (state._lrcDomMap && state._lrcDomMap.length > 0) {
+    let active = null;
+    for (let i = state._lrcDomMap.length - 1; i >= 0; i--) {
+      if (state._lrcDomMap[i].timeMs <= progressMs) {
+        active = state._lrcDomMap[i].el;
+        break;
+      }
     }
-    // Map LRC index → DOM line index proportionally
-    const ratio = lrcIdx / Math.max(state.syncedLyrics.length - 1, 1);
-    targetIdx = Math.round(ratio * (lines.length - 1));
-  } else {
-    // ── No LRC: use song progress ratio ──
-    const ratio = progressMs / state.currentTrack.durationMs;
-    targetIdx = Math.round(ratio * (lines.length - 1));
+    if (active && !active.classList.contains("cs-line-active")) {
+      document.querySelectorAll(".cs-line-active").forEach(l => l.classList.remove("cs-line-active"));
+      active.classList.add("cs-line-active");
+    }
+    return;
   }
 
-  targetIdx = Math.max(0, Math.min(targetIdx, lines.length - 1));
+  // ── Fallback: time-proportional (no LRC) ──
+  const lines = document.querySelectorAll(".cs-row, .cs-lyric");
+  if (!lines.length) return;
+  const ratio = progressMs / state.currentTrack.durationMs;
+  const targetIdx = Math.max(0, Math.min(Math.round(ratio * (lines.length - 1)), lines.length - 1));
   const target = lines[targetIdx];
-
   if (target && !target.classList.contains("cs-line-active")) {
     lines.forEach(l => l.classList.remove("cs-line-active"));
     target.classList.add("cs-line-active");
