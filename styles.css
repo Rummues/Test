@@ -493,6 +493,12 @@ html, body {
   background: rgba(255,214,10,0.14);
   border: 1px solid rgba(255,214,10,0.28);
 }
+/* LRC-synced mode: green glow to indicate precision sync */
+.ctrl-sync.lrc-active {
+  color: #30d158;
+  background: rgba(48,209,88,0.14);
+  border: 1px solid rgba(48,209,88,0.28);
+}
 
 .ctrl-val {
   font-size: 12px;

@@ -48,6 +48,8 @@ const state = {
   shareMode: false,
   room: { code: null, isHost: false, pollTimer: null },
   prefetchedKey: null,   // key of the track whose chords are prefetched
+  syncedLyrics: [],      // [{timeMs, text}] from lrclib synced lyrics
+  rttSamples: [],        // last N RTT measurements (ms) for latency compensation
 };
 
 // In-memory prefetch cache: trackKey → { sources, detectedKey }
@@ -189,7 +191,9 @@ function bindEvents() {
       state.chordsData = state.chordsSources[idx];
       renderChords();
       renderSourceSwitcher();
-      window.scrollTo({ top: 0, behavior: "smooth" });
+      const cc = document.querySelector('.chords-card');
+      if (cc) window.scrollTo({ top: cc.getBoundingClientRect().top + window.scrollY - 8, behavior: "smooth" });
+      else window.scrollTo({ top: 0, behavior: "smooth" });
     }
   });
 
@@ -372,6 +376,8 @@ function disconnectSpotify() {
   state.lastSyncAt = 0;
   resetLyrics("muted", "Esperando", "La letra aparecerá aquí cuando Spotify reporte una canción activa.");
   resetChords();
+  state.syncedLyrics = [];
+  state.rttSamples = [];
   setAuthStatus("muted", "Sin conectar");
   setPlaybackStatus("muted", "Esperando");
   renderAll();
@@ -393,9 +399,14 @@ async function fetchSpotifyPlayback() {
   if (!(await ensureFreshSpotifyToken())) { renderAll(); return; }
 
   try {
+    const fetchStart = performance.now();
     const response = await fetch("https://api.spotify.com/v1/me/player", {
       headers: { Authorization: `Bearer ${state.tokens.accessToken}` }
     });
+    // Measure RTT for latency compensation
+    const rtt = performance.now() - fetchStart;
+    state.rttSamples.push(rtt);
+    if (state.rttSamples.length > 6) state.rttSamples.shift();
 
     if (response.status === 204) {
       state.currentTrack = null;
@@ -491,10 +502,19 @@ async function loadTrackResources(track, trackKey) {
   // Prevent browser scroll-restoration from fighting us
   if ("scrollRestoration" in history) history.scrollRestoration = "manual";
 
-  // Scroll to top immediately and again after render settles
-  window.scrollTo({ top: 0, behavior: "instant" });
-  setTimeout(() => window.scrollTo({ top: 0, behavior: "instant" }), 50);
-  setTimeout(() => window.scrollTo({ top: 0, behavior: "instant" }), 300);
+  // Scroll to the chords section (not top of page) so user sees chords immediately
+  function scrollToChordsCard() {
+    const chordsCard = document.querySelector('.chords-card');
+    if (chordsCard) {
+      const y = chordsCard.getBoundingClientRect().top + window.scrollY - 8;
+      window.scrollTo({ top: y, behavior: "instant" });
+    } else {
+      window.scrollTo({ top: 0, behavior: "instant" });
+    }
+  }
+  scrollToChordsCard();
+  setTimeout(scrollToChordsCard, 50);
+  setTimeout(scrollToChordsCard, 300);
 
   if (el.chordsSections) el.chordsSections.scrollTop = 0;
   state.scroll.userPaused = true;
@@ -505,6 +525,7 @@ async function loadTrackResources(track, trackKey) {
   state.enharmonic   = false;
   state.bpm          = null;
   state.detectedKey  = null;
+  state.syncedLyrics = [];   // reset until lrclib responds
   if (el.enharmonicBtn) el.enharmonicBtn.classList.remove("active");
   updateKeyBadge();
   showScrollControls(false);
@@ -538,6 +559,10 @@ async function loadTrackResources(track, trackKey) {
   const searchPlan = buildSearchPlan(track);
   state.lyricsSourceUrl = searchPlan.googleLyricsUrl;
   renderLyrics();
+
+  // Update badge & scroll UI to reflect LRC availability
+  updateKeyBadge();
+  updateScrollUI();
 }
 
 // ─── Lyrics ───────────────────────────────────────────────────
@@ -581,6 +606,20 @@ async function fetchLyricsForTrack(track) {
     fetchJsonTimeout(`https://lrclib.net/api/search?${searchParams}`, 4000)
   ]);
 
+  // ── Extract synced lyrics for LRC-based scroll sync ──
+  let syncedRaw = extractSyncedLyricsRaw(exact);
+  if (!syncedRaw && Array.isArray(searchResults)) {
+    for (const item of searchResults) {
+      syncedRaw = extractSyncedLyricsRaw(item);
+      if (syncedRaw) break;
+    }
+  }
+  state.syncedLyrics = parseLRC(syncedRaw);
+  if (state.syncedLyrics.length) {
+    console.log("[LRC] parsed", state.syncedLyrics.length, "synced lines");
+  }
+
+  // ── Extract plain text lyrics ──
   const fromExact = extractLyricsText(exact);
   if (fromExact) return fromExact;
 
@@ -753,6 +792,9 @@ function parseCifraclubPage(html, title, artist) {
     .replace(/&#[0-9]+;/g, "")
     .trim();
 
+  // Decode any remaining HTML entities (tildes, ñ, etc.)
+  sheetText = decodeHtmlEntities(sheetText);
+
   // Prepend capo/tone info if found
   if (capoInfo) sheetText = `[${capoInfo} — acordes transpuestos automáticamente]\n\n` + sheetText;
 
@@ -765,18 +807,27 @@ const NOTES_FLAT  = ["C","Db","D","Eb","E","F","Gb","G","Ab","A","Bb","B"];
 
 // Convert flat enharmonics to sharps — keeps Bb family untouched
 function flatToSharpText(text) {
-  // Replace flat roots (not Bb) and keep chord suffix: Abm→G#m, Ebm7→D#m7, etc.
-  const map = { "Eb":"D#","Ab":"G#","Db":"C#","Gb":"F#","Cb":"B","Fb":"E" };
-  return text.replace(/\b(Eb|Ab|Db|Gb|Cb|Fb)((?:maj|min|m|dim|aug|sus[24]?|add)?[0-9]?(?:\/[A-G][#b]?)?)/g,
-    (_, root, suffix) => (map[root] || root) + suffix
+  // Convert ALL flat roots to sharp equivalents (total conversion, no exceptions)
+  const map = { "Bb":"A#","Eb":"D#","Ab":"G#","Db":"C#","Gb":"F#","Cb":"B","Fb":"E" };
+  // Match root + optional suffix + optional slash bass (also convert bass note)
+  return text.replace(/\b(Bb|Eb|Ab|Db|Gb|Cb|Fb)((?:maj|ma|M|min|m|dim|aug|sus[24]?|add)?(?:[0-9]{1,2})?(?:[#b][0-9]+)*)?(?:\/(Bb|Eb|Ab|Db|Gb|Cb|Fb|[A-G][#b]?))?/g,
+    (match, root, suffix, bass) => {
+      let result = (map[root] || root) + (suffix || '');
+      if (bass) result += '/' + (map[bass] || bass);
+      return result;
+    }
   );
 }
 
-// Convert sharps to flats: C#m→Dbm, G#m7→Abm7, A#→Bb, etc.
+// Convert ALL sharps to flats (total conversion, no exceptions)
 function sharpToFlatText(text) {
   const map = { "C#":"Db","D#":"Eb","F#":"Gb","G#":"Ab","A#":"Bb" };
-  return text.replace(/\b([A-G]#)((?:maj|min|m|dim|aug|sus[24]?|add)?[0-9]?(?:\/[A-G][#b]?)?)/g,
-    (_, root, suffix) => (map[root] || root) + suffix
+  return text.replace(/\b([A-G]#)((?:maj|ma|M|min|m|dim|aug|sus[24]?|add)?(?:[0-9]{1,2})?(?:[#b][0-9]+)*)?(?:\/([A-G]#|[A-G][#b]?))?/g,
+    (match, root, suffix, bass) => {
+      let result = (map[root] || root) + (suffix || '');
+      if (bass) result += '/' + (map[bass] || bass);
+      return result;
+    }
   );
 }
 
@@ -920,7 +971,7 @@ async function fetchChordsViaEChords(title, artist) {
     ? preMatch[1].replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&nbsp;/g, " ")
     : "";
 
-  const sheetText = rawText.trim();
+  const sheetText = decodeHtmlEntities(rawText.trim());
   if (!sheetText) throw new Error("E-Chords: contenido vacío");
   return { type: "text", content: sheetText, source: "E-Chords", url: pageUrl };
 }
@@ -1072,6 +1123,9 @@ function parseUltimateGuitarPage(html, title, artist) {
     .replace(/\[[^\]]*]/gi, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+
+  // Decode any remaining HTML entities (tildes, ñ, etc.)
+  text = decodeHtmlEntities(text);
 
   // (capo already detected above)
 
@@ -1268,38 +1322,62 @@ function startTeleprompterLoop() {
       const PX_PER_BEAT = 6;
       pxPerSec = (state.bpm / 60) * PX_PER_BEAT * state.scroll.speed;
     } else if (state.scroll.syncMode) {
-      // ── Song-sync: calculate required px/sec from Spotify position ──
+      // ── Song-sync: LRC-aware if available, else time-proportional ──
       const track = state.currentTrack;
       if (!track || !track.durationMs) {
-        // Fallback to free scroll if no track info
         pxPerSec = 40 * state.scroll.speed;
       } else {
-        const scrollable = document.documentElement.scrollHeight - window.innerHeight;
-        const currentScroll = window.scrollY;
-        const remaining = scrollable - currentScroll;
+        const estimatedMs = computeProgressMs();
 
-        // Estimate current playback position (interpolated since last poll)
-        const msSinceSync = Date.now() - state.lastSyncAt;
-        const estimatedMs = Math.min(
-          (state.currentTrack.progressMs || 0) + (track.isPlaying ? msSinceSync : 0),
-          track.durationMs
-        );
-        const msRemaining = Math.max(track.durationMs - estimatedMs, 1000);
-        const secRemaining = msRemaining / 1000;
+        // ── LRC-based sync: scroll to the lyric line matching current time ──
+        if (state.syncedLyrics.length > 0) {
+          // Find current lyric index — the last line whose timeMs <= estimatedMs
+          // Apply lookahead: scroll slightly early so the line is visible before it's sung
+          const avgRtt = state.rttSamples.length
+            ? state.rttSamples.reduce((a, b) => a + b, 0) / state.rttSamples.length : 0;
+          const lookaheadMs = avgRtt / 2 + 300; // RTT/2 + animation buffer
+          const lookupMs = estimatedMs + lookaheadMs;
 
-        // px/sec needed to reach bottom exactly when song ends
-        pxPerSec = remaining > 0 ? (remaining / secRemaining) : 0;
+          let lrcIdx = -1;
+          for (let i = state.syncedLyrics.length - 1; i >= 0; i--) {
+            if (state.syncedLyrics[i].timeMs <= lookupMs) { lrcIdx = i; break; }
+          }
 
-        // Apply speed multiplier as fine-tuning on top of sync
-        pxPerSec *= state.scroll.speed;
+          // Map LRC line index to a scroll target based on content position ratio
+          if (lrcIdx >= 0) {
+            const ratio = lrcIdx / Math.max(state.syncedLyrics.length - 1, 1);
+            const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+            // Target Y: slightly offset so the active line sits ~35% from top
+            const targetY = scrollable * ratio;
+            const currentY = window.scrollY;
+            const diff = targetY - currentY;
+
+            // Smooth approach: converge towards target at a controlled rate
+            // Speed multiplier allows user fine-tuning
+            pxPerSec = (diff * 3.0) * state.scroll.speed;
+            // Clamp to avoid jittery overshooting
+            pxPerSec = Math.max(-200, Math.min(200, pxPerSec));
+          } else {
+            pxPerSec = 0;
+          }
+        } else {
+          // ── Fallback: time-proportional (original behavior) ──
+          const scrollable = document.documentElement.scrollHeight - window.innerHeight;
+          const currentScroll = window.scrollY;
+          const remaining = scrollable - currentScroll;
+          const msRemaining = Math.max(track.durationMs - estimatedMs, 1000);
+          const secRemaining = msRemaining / 1000;
+          pxPerSec = remaining > 0 ? (remaining / secRemaining) : 0;
+          pxPerSec *= state.scroll.speed;
+        }
       }
     } else {
       pxPerSec = 40 * state.scroll.speed;
     }
 
     state.scroll._acc += pxPerSec * dt;
-    const step = Math.floor(state.scroll._acc);
-    if (step < 1) return;
+    const step = Math.trunc(state.scroll._acc);
+    if (step === 0) return;
     state.scroll._acc -= step;
     window.scrollBy({ top: step, behavior: "instant" });
   }
@@ -1319,7 +1397,18 @@ function updateScrollUI() {
   const syncBtn = document.getElementById("sync-scroll-btn");
   if (syncBtn) {
     syncBtn.classList.toggle("active", sync);
-    syncBtn.title = sync ? "Sync con canción: ON" : "Sincronizar con duración de canción";
+    const hasLRC = state.syncedLyrics && state.syncedLyrics.length > 0;
+    syncBtn.classList.toggle("lrc-active", sync && hasLRC);
+    if (sync && hasLRC) {
+      syncBtn.textContent = "♫ LRC";
+      syncBtn.title = "Sync con letras sincronizadas (LRC): ON";
+    } else if (sync) {
+      syncBtn.textContent = "♫ Sync";
+      syncBtn.title = "Sync con duración de canción: ON";
+    } else {
+      syncBtn.textContent = "♫ Sync";
+      syncBtn.title = "Sincronizar con duración de canción";
+    }
   }
 
   // BPM button state
@@ -1492,19 +1581,40 @@ function buildPairHTML(chordLine, lyricLine) {
   const chords = parseChordsFromLine(chordLine);
   if (!chords.length) return buildLyricLineHTML(lyricLine);
 
-  // Split lyric into segments, one per chord position
+  const lyrics = lyricLine || '';
+
+  // Snap chord positions to word boundaries to avoid splitting words mid-syllable.
+  // In monospace sources, chord position N means "N chars in". But in proportional
+  // fonts, slicing at exact positions can cut words ("t" / "rack" from "track").
+  // Fix: when a chord position falls mid-word, snap back to word start.
+  function snapToWordStart(pos) {
+    if (pos <= 0) return 0;
+    if (pos >= lyrics.length) return lyrics.length;
+    // If we're mid-word (current char is non-space AND previous char is non-space),
+    // walk back to the start of this word
+    if (lyrics[pos] !== ' ' && pos > 0 && lyrics[pos - 1] !== ' ') {
+      let p = pos;
+      while (p > 0 && lyrics[p - 1] !== ' ') p--;
+      return p;
+    }
+    return pos;
+  }
+
+  // Build segments with snapped positions — avoids word splits
+  const snapped = chords.map(c => ({ chord: c.chord, pos: snapToWordStart(c.pos) }));
+
+  // Deduplicate: if multiple chords snap to the same position,
+  // keep them all but only the first one gets the lyric text
   const segments = [];
-  for (let i = 0; i < chords.length; i++) {
-    const start = chords[i].pos;
-    const end   = i + 1 < chords.length ? chords[i + 1].pos : undefined;
-    const text  = end !== undefined
-      ? (lyricLine || '').slice(start, end)
-      : (lyricLine || '').slice(start);
-    segments.push({ chord: chords[i].chord, text });
+  for (let i = 0; i < snapped.length; i++) {
+    const start = snapped[i].pos;
+    const end   = i + 1 < snapped.length ? snapped[i + 1].pos : lyrics.length;
+    const text  = start < end ? lyrics.slice(start, end) : '';
+    segments.push({ chord: snapped[i].chord, text });
   }
 
   // Text before the first chord
-  const prefix = (lyricLine || '').slice(0, chords[0].pos);
+  const prefix = lyrics.slice(0, snapped[0].pos);
 
   let html = '<span class="cs-pair">';
   if (prefix) html += `<span class="cs-word">${escapeHtml(prefix)}</span>`;
@@ -1686,7 +1796,11 @@ function updateProgressDisplay() {
 function renderSyncLabel() {
   if (!state.lastSyncAt) { el.syncLabel.textContent = "Sin sincronizar"; return; }
   const seconds = Math.max(0, Math.floor((Date.now() - state.lastSyncAt) / 1000));
-  el.syncLabel.textContent = `Última lectura hace ${seconds}s`;
+  const avgRtt = state.rttSamples.length
+    ? Math.round(state.rttSamples.reduce((a, b) => a + b, 0) / state.rttSamples.length)
+    : 0;
+  const rttText = avgRtt ? ` · RTT ${avgRtt}ms` : "";
+  el.syncLabel.textContent = `Última lectura hace ${seconds}s${rttText}`;
 }
 
 function computeProgressMs() {
@@ -1694,7 +1808,12 @@ function computeProgressMs() {
   const base    = state.currentTrack.progressMs || 0;
   if (!state.currentTrack.isPlaying) return base;
   const elapsed = Math.max(0, Date.now() - state.lastSyncAt);
-  return Math.min(base + elapsed, state.currentTrack.durationMs || base);
+  // Compensate for network latency: Spotify reported progressMs as of ~RTT/2 ago
+  const avgRtt = state.rttSamples.length
+    ? state.rttSamples.reduce((a, b) => a + b, 0) / state.rttSamples.length
+    : 0;
+  const rttCompensation = avgRtt / 2;
+  return Math.min(base + elapsed + rttCompensation, state.currentTrack.durationMs || base);
 }
 
 // ─── Helpers ──────────────────────────────────────────────────
@@ -1927,6 +2046,30 @@ function extractLyricsText(payload) {
   return "";
 }
 
+// Extract raw synced lyrics string (with timestamps) from lrclib response
+function extractSyncedLyricsRaw(payload) {
+  if (!payload || typeof payload !== "object") return "";
+  if (typeof payload.syncedLyrics === "string" && payload.syncedLyrics.trim()) {
+    return payload.syncedLyrics.trim();
+  }
+  return "";
+}
+
+// Parse LRC format "[mm:ss.cc] lyric line" → [{timeMs, text}]
+function parseLRC(syncedText) {
+  if (!syncedText) return [];
+  const lines = [];
+  for (const line of syncedText.split('\n')) {
+    const m = line.match(/^\[(\d{1,2}):(\d{2})\.(\d{2,3})\]\s*(.*)/);
+    if (!m) continue;
+    const timeMs = parseInt(m[1]) * 60000 + parseInt(m[2]) * 1000
+                 + parseInt(m[3].length === 2 ? m[3] + '0' : m[3]);
+    const text = m[4].trim();
+    if (text) lines.push({ timeMs, text });
+  }
+  return lines.sort((a, b) => a.timeMs - b.timeMs);
+}
+
 function randomString(length) {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
   const values = crypto.getRandomValues(new Uint8Array(length));
@@ -1953,6 +2096,12 @@ function escapeHtml(value) {
   return String(value)
     .replace(/&/g, "&amp;").replace(/</g, "&lt;")
     .replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function decodeHtmlEntities(str) {
+  const ta = document.createElement("textarea");
+  ta.innerHTML = str;
+  return ta.value;
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2035,6 +2184,7 @@ function updateKeyBadge() {
   const parts = [];
   if (state.detectedKey) parts.push(state.detectedKey.label);
   if (state.bpm) parts.push(`${state.bpm} BPM`);
+  if (state.syncedLyrics && state.syncedLyrics.length > 0) parts.push("LRC");
 
   if (parts.length) {
     badge.textContent = parts.join(" · ");
@@ -2439,16 +2589,25 @@ const GUITAR_CHORDS = {
 function getGuitarVoicings(chordName) {
   // Try exact match first, then normalize
   if (GUITAR_CHORDS[chordName]) return GUITAR_CHORDS[chordName];
+
+  // Normalize Latin-American suffixes: 7M→maj7, Δ→maj7, etc.
+  const SUFFIX_ALIASES = { "7M":"maj7", "7Ma":"maj7", "7maj":"maj7", "Δ":"maj7", "△":"maj7" };
+  const root = chordName.match(/^[A-G][#b]?/)?.[0] || "";
+  let suffix = chordName.slice(root.length);
+  suffix = SUFFIX_ALIASES[suffix] || suffix;
+  const normalized = root + suffix;
+  if (GUITAR_CHORDS[normalized]) return GUITAR_CHORDS[normalized];
+
   // Try without bass note (e.g. "G/B" → "G")
-  const noSlash = chordName.replace(/\/.*$/, "");
+  const noSlash = normalized.replace(/\/.*$/, "");
   if (GUITAR_CHORDS[noSlash]) return GUITAR_CHORDS[noSlash];
   // Normalize enharmonics
   const enharmonics = { "Db":"C#","Eb":"D#","Gb":"F#","Ab":"G#","Bb":"A#" };
   const rev = Object.fromEntries(Object.entries(enharmonics).map(([a,b])=>[b,a]));
-  const root = noSlash.match(/^[A-G][#b]?/)?.[0] || "";
-  const suffix = noSlash.slice(root.length);
-  const altRoot = enharmonics[root] || rev[root] || "";
-  if (altRoot && GUITAR_CHORDS[altRoot + suffix]) return GUITAR_CHORDS[altRoot + suffix];
+  const rootClean = noSlash.match(/^[A-G][#b]?/)?.[0] || "";
+  const suffixClean = noSlash.slice(rootClean.length);
+  const altRoot = enharmonics[rootClean] || rev[rootClean] || "";
+  if (altRoot && GUITAR_CHORDS[altRoot + suffixClean]) return GUITAR_CHORDS[altRoot + suffixClean];
   return [];
 }
 
@@ -2457,7 +2616,10 @@ function getChordNotes(chordName) {
   if (voicings.length) return voicings[0].notes || [];
   // Fallback: compute intervals from chord name
   const root = chordName.match(/^[A-G][#b]?/)?.[0] || "C";
-  const suffix = chordName.slice(root.length);
+  let suffix = chordName.slice(root.length);
+  // Normalize Latin-American suffixes
+  const SUFFIX_ALIASES = { "7M":"maj7", "7Ma":"maj7", "7maj":"maj7", "Δ":"maj7", "△":"maj7" };
+  suffix = SUFFIX_ALIASES[suffix] || suffix;
   // Resolve flat roots to sharp equivalent for CHROMA_IDX lookup
   const FLAT_TO_SHARP = { Cb:"B", Db:"C#", Eb:"D#", Fb:"E", Gb:"F#", Ab:"G#", Bb:"A#" };
   const resolvedRoot = FLAT_TO_SHARP[root] || root;
@@ -2983,3 +3145,41 @@ function renderStats() {
 }
 
 // openSettings refreshes stats — patched directly in the original function
+
+// ═══════════════════════════════════════════════════════════════
+//  ROADMAP — Multi-instrument tab views (not yet implemented)
+// ═══════════════════════════════════════════════════════════════
+//
+//  Planned: swipeable horizontal panels in the chords card:
+//
+//  [Acordes] → swipe → [Tabs Guitarra] → swipe → [Tabs Bajo]
+//
+//  Panel 1 — Acordes (current implementation)
+//    - Chord sheet con letras y acordes alineados
+//    - Source switcher (Cifraclub / UG / E-Chords)
+//    - Transpose, enharmonic, font size
+//
+//  Panel 2 — Tabs Guitarra
+//    - Tablatura estándar de 6 cuerdas (e B G D A E)
+//    - Scrape de tabs de Ultimate Guitar (type:"Tab" en lugar de "Chords")
+//    - Renderizar con fuente monoespaciada, scroll horizontal si necesario
+//    - Highlight de posición actual si sync mode está activo
+//
+//  Panel 3 — Tabs Bajo
+//    - Tablatura de 4 cuerdas (G D A E)
+//    - Scrape de bass tabs de Ultimate Guitar (type:"Bass Tab")
+//    - Misma lógica de render que tabs guitarra
+//
+//  Diagramas mejorados (todos los instrumentos):
+//    - Guitarra: expandir GUITAR_CHORDS con más voicings (barre, drop-D, etc.)
+//    - Piano: ya implementado con inversiones
+//    - Bajo: nuevo — diagrama de mástil de 4 cuerdas, posiciones de raíz + escala
+//
+//  Implementación UI:
+//    - CSS scroll-snap horizontal dentro de .chords-card
+//    - Dots indicator debajo (• • •) mostrando panel activo
+//    - Swipe nativo con touch events o CSS scroll-snap-type: x mandatory
+//    - Cada panel mantiene su propio estado de fuente independiente
+//    - El source switcher se adapta al panel activo (chords vs tabs vs bass)
+//
+// ═══════════════════════════════════════════════════════════════
