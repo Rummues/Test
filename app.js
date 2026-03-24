@@ -5,6 +5,7 @@
 // ── CONFIGURACIÓN — edita estos dos valores ──────────────────
 const HARDCODED_CLIENT_ID  = "e15aaea6bb3349d2a828a01b208ab014";
 const HARDCODED_WORKER_URL = "https://test.millervicente.workers.dev";
+const APP_VERSION = "v20.1";
 // ─────────────────────────────────────────────────────────────
 
 const STORAGE_KEYS = {
@@ -74,6 +75,8 @@ document.addEventListener("DOMContentLoaded", boot);
 
 async function boot() {
   cacheElements();
+  const verEl = document.getElementById("app-version");
+  if (verEl) verEl.textContent = APP_VERSION;
   bindEvents();
   hydrateState();
   loadUserPrefs();
@@ -1293,7 +1296,8 @@ function startProgressLoop() {
   state.progressTimer = window.setInterval(() => {
     updateProgressDisplay();
     renderSyncLabel();
-  }, 500);
+    highlightActiveLine();
+  }, 400);
   startTeleprompterLoop();
 }
 
@@ -1343,20 +1347,23 @@ function startTeleprompterLoop() {
             if (state.syncedLyrics[i].timeMs <= lookupMs) { lrcIdx = i; break; }
           }
 
-          // Map LRC line index to a scroll target based on content position ratio
+          // Map LRC line index to scroll position WITHIN the chords card
           if (lrcIdx >= 0) {
-            const ratio = lrcIdx / Math.max(state.syncedLyrics.length - 1, 1);
-            const scrollable = document.documentElement.scrollHeight - window.innerHeight;
-            // Target Y: slightly offset so the active line sits ~35% from top
-            const targetY = scrollable * ratio;
-            const currentY = window.scrollY;
-            const diff = targetY - currentY;
+            const chordsCard = document.querySelector('.chords-card');
+            const chordSheet = document.querySelector('.chord-sheet');
+            if (chordsCard && chordSheet) {
+              const cardTop = chordsCard.getBoundingClientRect().top + window.scrollY - 8;
+              const sheetHeight = chordSheet.scrollHeight;
+              const ratio = lrcIdx / Math.max(state.syncedLyrics.length - 1, 1);
+              const targetY = cardTop + (sheetHeight * ratio);
+              const currentY = window.scrollY;
+              const diff = targetY - currentY;
 
-            // Smooth approach: converge towards target at a controlled rate
-            // Speed multiplier allows user fine-tuning
-            pxPerSec = (diff * 3.0) * state.scroll.speed;
-            // Clamp to avoid jittery overshooting
-            pxPerSec = Math.max(-200, Math.min(200, pxPerSec));
+              pxPerSec = (diff * 2.5) * state.scroll.speed;
+              pxPerSec = Math.max(-150, Math.min(150, pxPerSec));
+            } else {
+              pxPerSec = 0;
+            }
           } else {
             pxPerSec = 0;
           }
@@ -1553,9 +1560,9 @@ function renderSourceSwitcher() {
 // Quality: maj/ma/M, min/m, dim, aug, sus, add + all extensions (7,9,11,13)
 // Alterations: b5 #5 b9 #9 #11 b13 etc. (any number of them)
 // Slash: /[A-G][#b]?
-const MASTER_CHORD_RE = /^[A-G][#b]?(?:(?:maj|ma|M)(?:7|9|11|13)?|min(?:7|9|11|13)?|m(?:7|9|11|13|6)?|dim(?:7)?|aug(?:7)?|sus(?:2|4)?|add(?:2|4|9|11))?(?:[0-9]{1,2})?(?:[#b][0-9]+)*(?:\/[A-G][#b]?)?$/;
+const MASTER_CHORD_RE = /^[A-G][#b]?(?:(?:maj|ma|M)(?:7|9|11|13)?|min(?:7|9|11|13)?|m(?:7|9|11|13|6)?|dim(?:7)?|aug(?:7)?|\+|sus(?:2|4)?|add(?:2|4|9|11))?(?:[0-9]{1,2})?(?:\+)?(?:[#b][0-9]+)*(?:\/[A-G][#b]?)?$/;
 // Non-anchored version for inline matching (used in token extraction)
-const MASTER_CHORD_INLINE = /[A-G][#b]?(?:(?:maj|ma|M)(?:7|9|11|13)?|min(?:7|9|11|13)?|m(?:7|9|11|13|6)?|dim(?:7)?|aug(?:7)?|sus(?:2|4)?|add(?:2|4|9|11))?(?:[0-9]{1,2})?(?:[#b][0-9]+)*(?:\/[A-G][#b]?)?/g;
+const MASTER_CHORD_INLINE = /[A-G][#b]?(?:(?:maj|ma|M)(?:7|9|11|13)?|min(?:7|9|11|13)?|m(?:7|9|11|13|6)?|dim(?:7)?|aug(?:7)?|\+|sus(?:2|4)?|add(?:2|4|9|11))?(?:[0-9]{1,2})?(?:\+)?(?:[#b][0-9]+)*(?:\/[A-G][#b]?)?/g;
 
 function isChordOnlyLine(line) {
   const stripped = line.trim();
@@ -1637,6 +1644,18 @@ function buildLyricLineHTML(line) {
   return `<div class="cs-lyric">${escapeHtml(line)}</div>`;
 }
 
+// Detect tablature lines: e|---0---|, B|--3--| , |----|, tuning lines, etc.
+function isTabLine(line) {
+  const t = line.trim();
+  // Standard tab: starts with string letter + pipe
+  if (/^[eEbBgGdDaA]\|/.test(t)) return true;
+  // Pipe-delimited dashes/numbers (tab without letter prefix)
+  if (/^\|[\d\-hpbs\/\\~x\s|]+\|?\s*$/.test(t)) return true;
+  // Lines of pure dashes that look like tab continuation
+  if (/^[\-|]+$/.test(t) && t.length > 6) return true;
+  return false;
+}
+
 function buildChordSheetHTML(text) {
   const lines  = text.split('\n');
   let html     = '';
@@ -1652,6 +1671,12 @@ function buildChordSheetHTML(text) {
       continue;
     }
 
+    // Skip tablature lines entirely
+    if (isTabLine(line)) {
+      i++;
+      continue;
+    }
+
     // Section header lines
     if (/^[\[—(─]/.test(line.trim()) || /^──/.test(line.trim())) {
       html += `<div class="cs-section">${escapeHtml(line.trim())}</div>`;
@@ -1660,8 +1685,8 @@ function buildChordSheetHTML(text) {
     }
 
     if (isChordOnlyLine(line)) {
-      // Peek ahead: if next non-empty line is a lyric line, pair them
-      if (nextLine !== undefined && !isChordOnlyLine(nextLine) && nextLine.trim()
+      // Peek ahead: if next non-empty line is a lyric line (not tab), pair them
+      if (nextLine !== undefined && !isChordOnlyLine(nextLine) && !isTabLine(nextLine || '') && nextLine.trim()
           && !/^[\[—(─]/.test(nextLine.trim()) && !/^──/.test(nextLine.trim())) {
         html += `<div class="cs-row">${buildPairHTML(line, nextLine)}</div>`;
         i += 2;
@@ -2257,6 +2282,36 @@ function highlightActiveSection() {
   if (active) active.classList.add("cs-active");
 }
 
+// ── Active line highlight — colors the line currently being played ──
+function highlightActiveLine() {
+  if (!state.currentTrack || !state.currentTrack.isPlaying) return;
+  const lines = document.querySelectorAll(".cs-row, .cs-lyric");
+  if (!lines.length) return;
+
+  // "Reading position": ~30% from top of viewport
+  const readY = window.innerHeight * 0.30;
+  let closest = null;
+  let closestDist = Infinity;
+
+  for (const line of lines) {
+    const rect = line.getBoundingClientRect();
+    const mid = rect.top + rect.height / 2;
+    const dist = Math.abs(mid - readY);
+    if (dist < closestDist) {
+      closestDist = dist;
+      closest = line;
+    }
+  }
+
+  // Only highlight if reasonably close to reading position
+  if (closest && closestDist < window.innerHeight * 0.25) {
+    if (!closest.classList.contains("cs-line-active")) {
+      lines.forEach(l => l.classList.remove("cs-line-active"));
+      closest.classList.add("cs-line-active");
+    }
+  }
+}
+
 // ── 5. Chord tap → diagram modal ─────────────────────────────
 function attachChordTapHandlers() {
   // Use event delegation on #chords-sections (persistent element) instead
@@ -2513,11 +2568,14 @@ function renderPianoDiagram(notes, bassNote) {
       const isLit  = litSet.has(key);
       const isBass = key === bassKey;
       const bx = (octOffset + pos) * WW + 2 + WW - BW / 2;
-      const fill = isLit ? chordColor : "rgba(22,22,26,.97)";
+      // Active black keys: dark fill + colored border (not full color fill)
+      const fill   = isLit ? "rgba(40,40,48,.95)" : "rgba(22,22,26,.97)";
+      const stroke = isLit ? chordColor : "rgba(255,255,255,.08)";
+      const sw     = isLit ? "2.5" : "1";
       blacks += `<rect x="${bx}" y="2" width="${BW}" height="${BH}" rx="3"
-        fill="${fill}" stroke="rgba(255,255,255,.08)" stroke-width="1"/>`;
+        fill="${fill}" stroke="${stroke}" stroke-width="${sw}"/>`;
       if (isLit) {
-        const labelFill = isBass ? "#fff" : "rgba(255,255,255,.8)";
+        const labelFill = isBass ? chordColor : chordColor;
         const fw = isBass ? "900" : "700";
         bLabels += `<text x="${bx + BW/2}" y="${2 + BH - 7}" font-size="8" font-weight="${fw}"
           fill="${labelFill}" text-anchor="middle" font-family="sans-serif">${bn.replace("#","#")}${isBass ? "*" : ""}</text>`;
@@ -2590,8 +2648,8 @@ function getGuitarVoicings(chordName) {
   // Try exact match first, then normalize
   if (GUITAR_CHORDS[chordName]) return GUITAR_CHORDS[chordName];
 
-  // Normalize Latin-American suffixes: 7M→maj7, Δ→maj7, etc.
-  const SUFFIX_ALIASES = { "7M":"maj7", "7Ma":"maj7", "7maj":"maj7", "Δ":"maj7", "△":"maj7" };
+  // Normalize Latin-American suffixes: 7M→maj7, Δ→maj7, +→aug, etc.
+  const SUFFIX_ALIASES = { "7M":"maj7", "7Ma":"maj7", "7maj":"maj7", "Δ":"maj7", "△":"maj7", "+":"aug", "7+":"aug7" };
   const root = chordName.match(/^[A-G][#b]?/)?.[0] || "";
   let suffix = chordName.slice(root.length);
   suffix = SUFFIX_ALIASES[suffix] || suffix;
@@ -2618,7 +2676,7 @@ function getChordNotes(chordName) {
   const root = chordName.match(/^[A-G][#b]?/)?.[0] || "C";
   let suffix = chordName.slice(root.length);
   // Normalize Latin-American suffixes
-  const SUFFIX_ALIASES = { "7M":"maj7", "7Ma":"maj7", "7maj":"maj7", "Δ":"maj7", "△":"maj7" };
+  const SUFFIX_ALIASES = { "7M":"maj7", "7Ma":"maj7", "7maj":"maj7", "Δ":"maj7", "△":"maj7", "+":"aug", "7+":"aug7" };
   suffix = SUFFIX_ALIASES[suffix] || suffix;
   // Resolve flat roots to sharp equivalent for CHROMA_IDX lookup
   const FLAT_TO_SHARP = { Cb:"B", Db:"C#", Eb:"D#", Fb:"E", Gb:"F#", Ab:"G#", Bb:"A#" };
@@ -2626,7 +2684,9 @@ function getChordNotes(chordName) {
   const ri = CHROMA_IDX[resolvedRoot] ?? 0;
   const ALL = ["C","C#","D","D#","E","F","F#","G","G#","A","A#","B"];
   const isMinor = suffix.startsWith("m") && !suffix.startsWith("maj");
-  let intervals = [0, isMinor ? 3 : 4, 7];
+  const isAug = suffix.includes("aug") || suffix === "+";
+  const isDim = suffix.includes("dim");
+  let intervals = [0, isMinor ? 3 : 4, isDim ? 6 : (isAug ? 8 : 7)];
   if (suffix.includes("maj7"))                     intervals.push(11);
   else if (suffix.includes("7") || suffix.includes("dom")) intervals.push(10);
   if (suffix.includes("9"))  intervals.push(14);
