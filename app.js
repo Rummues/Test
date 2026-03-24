@@ -5,7 +5,7 @@
 // ── CONFIGURACIÓN — edita estos dos valores ──────────────────
 const HARDCODED_CLIENT_ID  = "e15aaea6bb3349d2a828a01b208ab014";
 const HARDCODED_WORKER_URL = "https://test.millervicente.workers.dev";
-const APP_VERSION = "v20.1";
+const APP_VERSION = "v20.2";
 // ─────────────────────────────────────────────────────────────
 
 const STORAGE_KEYS = {
@@ -2283,32 +2283,41 @@ function highlightActiveSection() {
 }
 
 // ── Active line highlight — colors the line currently being played ──
+// ── Active line highlight — based on song TIME, not scroll position ──
 function highlightActiveLine() {
-  if (!state.currentTrack || !state.currentTrack.isPlaying) return;
+  if (!state.currentTrack || !state.currentTrack.isPlaying || !state.currentTrack.durationMs) {
+    // Clear highlight when not playing
+    document.querySelectorAll(".cs-line-active").forEach(l => l.classList.remove("cs-line-active"));
+    return;
+  }
+
   const lines = document.querySelectorAll(".cs-row, .cs-lyric");
   if (!lines.length) return;
 
-  // "Reading position": ~30% from top of viewport
-  const readY = window.innerHeight * 0.30;
-  let closest = null;
-  let closestDist = Infinity;
+  const progressMs = computeProgressMs();
+  let targetIdx = -1;
 
-  for (const line of lines) {
-    const rect = line.getBoundingClientRect();
-    const mid = rect.top + rect.height / 2;
-    const dist = Math.abs(mid - readY);
-    if (dist < closestDist) {
-      closestDist = dist;
-      closest = line;
+  if (state.syncedLyrics && state.syncedLyrics.length > 0) {
+    // ── LRC mode: match playback time to lyric timestamp ──
+    let lrcIdx = 0;
+    for (let i = state.syncedLyrics.length - 1; i >= 0; i--) {
+      if (state.syncedLyrics[i].timeMs <= progressMs) { lrcIdx = i; break; }
     }
+    // Map LRC index → DOM line index proportionally
+    const ratio = lrcIdx / Math.max(state.syncedLyrics.length - 1, 1);
+    targetIdx = Math.round(ratio * (lines.length - 1));
+  } else {
+    // ── No LRC: use song progress ratio ──
+    const ratio = progressMs / state.currentTrack.durationMs;
+    targetIdx = Math.round(ratio * (lines.length - 1));
   }
 
-  // Only highlight if reasonably close to reading position
-  if (closest && closestDist < window.innerHeight * 0.25) {
-    if (!closest.classList.contains("cs-line-active")) {
-      lines.forEach(l => l.classList.remove("cs-line-active"));
-      closest.classList.add("cs-line-active");
-    }
+  targetIdx = Math.max(0, Math.min(targetIdx, lines.length - 1));
+  const target = lines[targetIdx];
+
+  if (target && !target.classList.contains("cs-line-active")) {
+    lines.forEach(l => l.classList.remove("cs-line-active"));
+    target.classList.add("cs-line-active");
   }
 }
 
